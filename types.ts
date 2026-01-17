@@ -91,11 +91,12 @@ export interface Table {
   lastAudio: number;
   lastTranscript: number;
   topic: string;
-  facilitatorId?: string; // Link to Facilitator
-  facilitatorName: string; // Display name fallback
-  trackId?: string; // Link to Track
-  isHot?: boolean; // High activity or sentiment shift
-  customAgenda?: AgendaItem[]; // If present, overrides event default
+  facilitatorId?: string;
+  facilitatorName: string;
+  trackId?: string;
+  isHot?: boolean;
+  customAgenda?: AgendaItem[];
+  _dbId?: number;
 }
 
 export interface Insight {

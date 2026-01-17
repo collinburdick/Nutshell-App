@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { Search, Sparkles, MessageSquare, ArrowRight, Loader2 } from 'lucide-react';
-import { queryTranscripts } from '../services/geminiService';
-import ReactMarkdown from 'react-markdown'; // Actually, we'll implement a simple renderer or just text to avoid dep issues if possible. 
-// Standard React doesn't have markdown renderer built-in. I will assume raw text or basic mapping for this demo.
-// To keep it dependency-free for this environment, I'll just render text with whitespace preservation.
+import { api } from '../services/api';
 
-export const Explore: React.FC = () => {
+interface ExploreProps {
+  eventId: number;
+}
+
+export const Explore: React.FC<ExploreProps> = ({ eventId }) => {
   const [query, setQuery] = useState('');
   const [history, setHistory] = useState<{q: string, a: string}[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -15,8 +16,12 @@ export const Explore: React.FC = () => {
     if (!query.trim()) return;
 
     setIsLoading(true);
-    const answer = await queryTranscripts(query);
-    setHistory(prev => [{q: query, a: answer}, ...prev]);
+    try {
+      const result = await api.ai.query(eventId, query);
+      setHistory(prev => [{q: query, a: result.answer}, ...prev]);
+    } catch (error) {
+      setHistory(prev => [{q: query, a: 'Error: Unable to process query. Please ensure the OpenAI API key is configured.'}, ...prev]);
+    }
     setQuery('');
     setIsLoading(false);
   };
@@ -24,7 +29,6 @@ export const Explore: React.FC = () => {
   return (
     <div className="h-full w-full bg-slate-50 flex flex-col items-center">
       
-      {/* Header */}
       <div className="w-full max-w-4xl px-6 py-8">
           <h1 className="text-2xl font-bold text-slate-900 mb-2 flex items-center gap-2">
               <Sparkles className="w-6 h-6 text-indigo-600" />
@@ -33,7 +37,6 @@ export const Explore: React.FC = () => {
           <p className="text-slate-500">Ask questions across all active sessions. Answers are grounded in real-time transcripts.</p>
       </div>
 
-      {/* Search Bar */}
       <div className="w-full max-w-2xl mb-8 relative z-10">
           <form onSubmit={handleSearch} className="relative shadow-lg rounded-xl">
             <input 
@@ -64,7 +67,6 @@ export const Explore: React.FC = () => {
           </div>
       </div>
 
-      {/* Results Stream */}
       <div className="w-full max-w-4xl flex-1 overflow-y-auto px-6 pb-20 space-y-6">
           {history.length === 0 && (
               <div className="flex flex-col items-center justify-center h-64 text-slate-400">
