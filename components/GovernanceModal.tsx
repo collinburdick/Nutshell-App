@@ -1,22 +1,30 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, ShieldAlert, Check, RefreshCw, Eye, EyeOff } from 'lucide-react';
-import { clsx } from 'clsx';
+
+interface GovernanceItem {
+  id: string;
+  table: string;
+  original: string;
+  redacted: string;
+  type: string;
+}
 
 interface GovernanceModalProps {
   isOpen: boolean;
   onClose: () => void;
+  flaggedItems?: GovernanceItem[];
 }
 
-// Mock PII Data
-const FLAGGED_ITEMS = [
-    { id: 'pii1', table: 'Table A1', original: 'Email james@example.com regarding the invoice.', redacted: 'Email [EMAIL_REDACTED] regarding the invoice.', type: 'EMAIL' },
-    { id: 'pii2', table: 'Table B2', original: 'My phone number is 555-0199.', redacted: 'My phone number is [PHONE_REDACTED].', type: 'PHONE' },
-    { id: 'pii3', table: 'Table C1', original: 'Contact Sarah directly.', redacted: 'Contact [PERSON_NAME] directly.', type: 'PERSON' },
-];
-
-export const GovernanceModal: React.FC<GovernanceModalProps> = ({ isOpen, onClose }) => {
-  const [items, setItems] = useState(FLAGGED_ITEMS);
+export const GovernanceModal: React.FC<GovernanceModalProps> = ({ isOpen, onClose, flaggedItems }) => {
+  const [items, setItems] = useState<GovernanceItem[]>(flaggedItems ?? []);
   const [revealedIds, setRevealedIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (isOpen) {
+      setItems(flaggedItems ?? []);
+      setRevealedIds(new Set());
+    }
+  }, [flaggedItems, isOpen]);
 
   if (!isOpen) return null;
 

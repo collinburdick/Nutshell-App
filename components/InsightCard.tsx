@@ -5,10 +5,11 @@ import { clsx } from 'clsx';
 
 interface InsightCardProps {
   insight: Insight;
-  onClick: () => void;
+  onClick?: () => void;
 }
 
 export const InsightCard: React.FC<InsightCardProps> = ({ insight, onClick }) => {
+  const isClickable = Boolean(onClick);
   
   const getIcon = () => {
     switch (insight.type) {
@@ -34,8 +35,9 @@ export const InsightCard: React.FC<InsightCardProps> = ({ insight, onClick }) =>
     <div 
         onClick={onClick}
         className={clsx(
-            "p-4 rounded-lg border mb-3 cursor-pointer transition-all hover:shadow-md bg-white group",
-            getBorderColor()
+            "p-4 rounded-lg border mb-3 transition-all bg-white",
+            getBorderColor(),
+            isClickable ? "cursor-pointer hover:shadow-md group" : "cursor-default"
         )}
     >
       <div className="flex justify-between items-start mb-2">
@@ -63,7 +65,7 @@ export const InsightCard: React.FC<InsightCardProps> = ({ insight, onClick }) =>
         </div>
       </div>
       
-      <h3 className="font-semibold text-slate-900 mb-1 leading-snug group-hover:text-indigo-700 transition-colors">
+      <h3 className={clsx("font-semibold text-slate-900 mb-1 leading-snug transition-colors", isClickable && "group-hover:text-indigo-700")}>
           {insight.title}
       </h3>
       <p className="text-sm text-slate-600 line-clamp-2 mb-3">
@@ -72,7 +74,7 @@ export const InsightCard: React.FC<InsightCardProps> = ({ insight, onClick }) =>
 
       <div className="flex items-center justify-between text-xs text-slate-400 pt-2 border-t border-slate-100/50">
           <span>{insight.relatedTableIds.length} tables involved</span>
-          <div className="flex items-center gap-1 text-indigo-600 font-medium group-hover:underline">
+          <div className={clsx("flex items-center gap-1 text-indigo-600 font-medium", isClickable && "group-hover:underline")}>
               {insight.evidenceCount} evidence clips <ArrowRight className="w-3 h-3" />
           </div>
       </div>

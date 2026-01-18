@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { Event, Table, Insight, InsightType } from '../types';
-import { api, wsClient } from '../services/api';
+import { api, notifyError, wsClient } from '../services/api';
 import { convertApiInsightToFrontendWithMapper, createTableIdMapper } from '../services/typeConverters';
 import { Flame, Star, MessageSquare, TrendingUp, Users, Mic, Quote, ArrowUpRight, Zap, HelpCircle } from 'lucide-react';
 import { clsx } from 'clsx';
@@ -26,7 +26,7 @@ export const LiveRecap: React.FC<LiveRecapProps> = ({ event, tables }) => {
       const mapper = tableIdMapper();
       setAllInsights(apiInsights.map(i => convertApiInsightToFrontendWithMapper(i, mapper)));
     } catch (error) {
-      console.error('Failed to fetch insights:', error);
+      notifyError('Failed to fetch insights', error);
     }
   }, [event.id, tableIdMapper]);
 
@@ -37,7 +37,7 @@ export const LiveRecap: React.FC<LiveRecapProps> = ({ event, tables }) => {
   useEffect(() => {
     wsClient.connect();
     const mapper = tableIdMapper();
-    const unsubInsight = wsClient.subscribe('insight', (data) => {
+    const unsubInsight = wsClient.subscribe('insight_added', (data) => {
       const insight = convertApiInsightToFrontendWithMapper(data, mapper);
       setAllInsights(prev => [insight, ...prev.filter(i => i.id !== insight.id)]);
     });

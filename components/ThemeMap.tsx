@@ -4,7 +4,7 @@ import { clsx } from 'clsx';
 
 interface ThemeMapProps {
   insights: Insight[];
-  onSelectInsight: (insight: Insight) => void;
+  onSelectInsight?: (insight: Insight) => void;
 }
 
 export const ThemeMap: React.FC<ThemeMapProps> = ({ insights, onSelectInsight }) => {
@@ -26,6 +26,7 @@ export const ThemeMap: React.FC<ThemeMapProps> = ({ insights, onSelectInsight })
     <div className="bg-slate-50/50 p-6 rounded-xl border border-slate-200 min-h-[300px]">
         <div className="flex flex-wrap gap-4 items-center justify-center h-full">
             {themes.map((theme, i) => {
+                const isInteractive = Boolean(onSelectInsight);
                 // Determine size based on evidence count relative to max
                 const maxEvidence = Math.max(...themes.map(t => t.evidenceCount));
                 const scale = Math.max(0.6, theme.evidenceCount / maxEvidence);
@@ -35,11 +36,12 @@ export const ThemeMap: React.FC<ThemeMapProps> = ({ insights, onSelectInsight })
                 return (
                     <div 
                         key={theme.id}
-                        onClick={() => onSelectInsight(theme)}
+                        onClick={isInteractive ? () => onSelectInsight?.(theme) : undefined}
                         className={clsx(
                             sizeClass,
-                            "rounded-full flex flex-col items-center justify-center text-center p-4 cursor-pointer transition-all hover:scale-105 shadow-sm hover:shadow-md border",
-                            "bg-white border-slate-200 hover:border-indigo-300 group relative overflow-hidden"
+                            "rounded-full flex flex-col items-center justify-center text-center p-4 transition-all shadow-sm border",
+                            "bg-white border-slate-200 group relative overflow-hidden",
+                            isInteractive ? "cursor-pointer hover:scale-105 hover:shadow-md hover:border-indigo-300" : "cursor-default"
                         )}
                         style={{
                             animation: `float ${3 + i}s ease-in-out infinite`

@@ -1,8 +1,10 @@
 
 import React, { useState } from 'react';
 import { Event, Track, Facilitator, Sponsor } from '../types';
-import { Users, Palette, Radio, Tag, Plus, Trash2, Mail, Save, RefreshCw, Briefcase, X } from 'lucide-react';
+import { Users, Palette, Radio, Tag, Plus, Trash2, Mail, Briefcase, X } from 'lucide-react';
 import { clsx } from 'clsx';
+import { api, notifyError } from '../services/api';
+import { convertApiFacilitatorToFrontend, convertApiSponsorToFrontend, convertApiTrackToFrontend } from '../services/typeConverters';
 
 interface SettingsViewProps {
   event: Event;
@@ -37,69 +39,100 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ event, onUpdateEvent
       });
   };
 
+  const handleTestStream = () => {
+      if (!event.mainSession?.streamUrl) {
+          notifyError('Stream URL missing', 'Add a stream URL before testing the main stage feed.');
+          return;
+      }
+      window.open(event.mainSession.streamUrl, '_blank', 'noopener,noreferrer');
+  };
+
+  const handleResetStream = () => {
+      onUpdateEvent({
+          ...event,
+          mainSession: { ...event.mainSession, streamUrl: '' }
+      });
+  };
+
   const handleAddTrack = (e: React.FormEvent) => {
       e.preventDefault();
       if (!newTrackName.trim()) return;
-      const newTrack: Track = {
-          id: `t${Date.now()}`,
+      api.tracks.create(parseInt(event.id), {
           name: newTrackName,
           color: newTrackColor
-      };
-      onUpdateEvent({
-          ...event,
-          tracks: [...(event.tracks || []), newTrack]
+      }).then(created => {
+          const newTrack = convertApiTrackToFrontend(created);
+          onUpdateEvent({
+              ...event,
+              tracks: [...(event.tracks || []), newTrack]
+          });
+          setNewTrackName('');
+      }).catch(error => {
+          notifyError('Failed to create track', error);
       });
-      setNewTrackName('');
   };
 
   const handleDeleteTrack = (id: string) => {
-      onUpdateEvent({
-          ...event,
-          tracks: event.tracks.filter(t => t.id !== id)
+      api.tracks.delete(parseInt(id)).then(() => {
+          onUpdateEvent({
+              ...event,
+              tracks: event.tracks.filter(t => t.id !== id)
+          });
+      }).catch(error => {
+          notifyError('Failed to delete track', error);
       });
   };
 
   const handleInviteFacilitator = (e: React.FormEvent) => {
       e.preventDefault();
       if (!newFacilitatorEmail.trim() || !newFacilitatorName.trim()) return;
-      const newFacilitator: Facilitator = {
-          id: `f${Date.now()}`,
+      api.facilitators.create(parseInt(event.id), {
           name: newFacilitatorName,
           email: newFacilitatorEmail,
           status: 'INVITED'
-      };
-      onUpdateEvent({
-          ...event,
-          facilitators: [...(event.facilitators || []), newFacilitator]
+      }).then(created => {
+          const newFacilitator = convertApiFacilitatorToFrontend(created);
+          onUpdateEvent({
+              ...event,
+              facilitators: [...(event.facilitators || []), newFacilitator]
+          });
+          setNewFacilitatorName('');
+          setNewFacilitatorEmail('');
+      }).catch(error => {
+          notifyError('Failed to invite facilitator', error);
       });
-      setNewFacilitatorName('');
-      setNewFacilitatorEmail('');
-      alert(`Invitation sent to ${newFacilitatorEmail}`);
   };
 
   const handleAddSponsor = (e: React.FormEvent) => {
       e.preventDefault();
       if (!newSponsorName.trim()) return;
-      const newSponsor: Sponsor = {
-          id: `s${Date.now()}`,
+      api.sponsors.create(parseInt(event.id), {
           name: newSponsorName,
           logoUrl: newSponsorLogo,
           keywords: newSponsorKeywords.split(',').map(k => k.trim()).filter(k => k)
-      };
-      onUpdateEvent({
-          ...event,
-          sponsors: [...(event.sponsors || []), newSponsor]
+      }).then(created => {
+          const newSponsor = convertApiSponsorToFrontend(created);
+          onUpdateEvent({
+              ...event,
+              sponsors: [...(event.sponsors || []), newSponsor]
+          });
+          setNewSponsorName('');
+          setNewSponsorLogo('');
+          setNewSponsorKeywords('');
+      }).catch(error => {
+          notifyError('Failed to add sponsor', error);
       });
-      setNewSponsorName('');
-      setNewSponsorLogo('');
-      setNewSponsorKeywords('');
   };
 
   const handleDeleteSponsor = (id: string) => {
       if (window.confirm("Remove this sponsor?")) {
-          onUpdateEvent({
-              ...event,
-              sponsors: (event.sponsors || []).filter(s => s.id !== id)
+          api.sponsors.delete(parseInt(id)).then(() => {
+              onUpdateEvent({
+                  ...event,
+                  sponsors: (event.sponsors || []).filter(s => s.id !== id)
+              });
+          }).catch(error => {
+              notifyError('Failed to delete sponsor', error);
           });
       }
   };
@@ -406,8 +439,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ event, onUpdateEvent
                                         The main stage is currently <strong>{event.mainSession?.status}</strong>.
                                     </p>
                                     <div className="flex gap-2">
-                                        <button className="text-xs bg-white border border-slate-300 px-3 py-1.5 rounded hover:bg-slate-50 font-medium">Test Stream</button>
-                                        <button className="text-xs bg-white border border-slate-300 px-3 py-1.5 rounded hover:bg-slate-50 font-medium">Reset Config</button>
+                                        <button onClick={handleTestStream} className="text-xs bg-white border border-slate-300 px-3 py-1.5 rounded hover:bg-slate-50 font-medium">Test Stream</button>
+                                        <button onClick={handleResetStream} className="text-xs bg-white border border-slate-300 px-3 py-1.5 rounded hover:bg-slate-50 font-medium">Reset Config</button>
                                     </div>
                                 </div>
                             </div>

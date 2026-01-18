@@ -15,6 +15,6 @@ View your app in AI Studio: https://ai.studio/apps/drive/1wPnap4ZVhfzMMt0AbC-dRr
 
 1. Install dependencies:
    `npm install`
-2. Set the `VITE_OPENAI_API_KEY` in [.env.local](.env.local) to your OpenAI API key
+2. Set the `SlalomOpenAIAPIKey` and `DATABASE_URL` in [.env.local](.env.local)
 3. Run the app:
    `npm run dev`

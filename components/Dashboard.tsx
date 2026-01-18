@@ -7,10 +7,10 @@ import { ThemeMap } from './ThemeMap';
 import { GovernanceModal } from './GovernanceModal';
 import { ShareFacilitatorCodesModal } from './ShareFacilitatorCodesModal';
 import { AgendaEditor } from './AgendaEditor';
-import { api, wsClient } from '../services/api';
-import { convertApiInsightToFrontendWithMapper, convertApiTranscriptToFrontendWithMapper, createTableIdMapper, getDbIdFromTable } from '../services/typeConverters';
+import { api, notifyError, wsClient } from '../services/api';
+import { convertApiInsightToFrontendWithMapper, convertApiTranscriptToFrontendWithMapper, createTableIdMapper } from '../services/typeConverters';
 import { Table, Insight, TranscriptSegment, InsightType, TableStatus, Event, AgendaItem } from '../types';
-import { BarChart2, Activity, Zap, Star, ArrowLeft, Megaphone, Plus, X, Copy, Check, QrCode, Sliders, Download, Shield, FileText, Filter, Search, Upload, Radio, StopCircle, HardDrive, Users, ThumbsUp, ThumbsDown, GitCommit, LayoutGrid, List, ShieldAlert, CalendarClock, Video, Loader2, PlayCircle } from 'lucide-react';
+import { Activity, Zap, Star, ArrowLeft, Megaphone, Plus, X, Sliders, Download, Shield, FileText, Filter, Search, Radio, StopCircle, HardDrive, Users, GitCommit, LayoutGrid, List, ShieldAlert, CalendarClock, Video, Loader2, PlayCircle } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { clsx } from 'clsx';
 
@@ -44,6 +44,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
 
   // Ops Modal Highlight Reel State
   const [highlightReelStatus, setHighlightReelStatus] = useState<'IDLE' | 'GENERATING' | 'READY'>('IDLE');
+  const [highlightReel, setHighlightReel] = useState<{ title: string; content: string } | null>(null);
 
   // Edit State
   const [editingTable, setEditingTable] = useState<Table | null>(null);
@@ -75,6 +76,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
       setEvent(initialEvent);
   }, [initialEvent]);
 
+  useEffect(() => {
+      setHighlightReel(null);
+      setHighlightReelStatus('IDLE');
+  }, [event.id]);
+
   const isMainStage = selectedTableId === 'MAIN_STAGE';
 
   // Get unique sessions for filter
@@ -83,6 +89,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
   const tracks = ['All Tracks', ...(event.tracks || []).map(t => t.name)];
 
   // Filter Logic
+  const allEventTables = tables.filter(t => t.eventId === event.id);
   const eventTables = tables.filter(t => {
       const matchEvent = t.eventId === event.id;
       const matchSession = sessionFilter === 'All Sessions' || t.session === sessionFilter;
@@ -144,7 +151,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
         setConsensusData(consensus);
       }
     } catch (error) {
-      console.error('Failed to fetch dashboard data:', error);
+      notifyError('Failed to fetch dashboard data', error);
     }
     setIsLoadingData(false);
   }, [event.id]);
@@ -158,12 +165,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
     
     const mapper = tableIdMapper();
     
-    const unsubInsight = wsClient.subscribe('insight', (data) => {
+    const unsubInsight = wsClient.subscribe('insight_added', (data) => {
       const insight = convertApiInsightToFrontendWithMapper(data, mapper);
       setAllInsights(prev => [insight, ...prev.filter(i => i.id !== insight.id)]);
     });
     
-    const unsubTranscript = wsClient.subscribe('transcript', (data) => {
+    const unsubTranscript = wsClient.subscribe('transcript_added', (data) => {
       const transcript = convertApiTranscriptToFrontendWithMapper(data, mapper);
       setAllTranscripts(prev => [transcript, ...prev.filter(t => t.id !== transcript.id)]);
     });
@@ -199,6 +206,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
 
   const nuggets = filteredInsights.filter(i => i.type === InsightType.GOLDEN_NUGGET);
   const standardInsights = filteredInsights.filter(i => i.type !== InsightType.GOLDEN_NUGGET);
+  const eventNuggets = allInsights.filter(i => i.type === InsightType.GOLDEN_NUGGET);
 
   // Handlers
   const handleTableFormSubmit = (e: React.FormEvent) => {
@@ -296,29 +304,306 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
     navigator.clipboard.writeText(code);
   };
 
-  const handleExport = (format: string) => {
-      alert(`Exporting data to ${format}... (Mock)`);
+  const toSlug = (value: string) => value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '') || 'event';
+
+  const downloadBlob = (filename: string, blob: Blob) => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadText = (filename: string, content: string, mimeType = 'text/plain') => {
+    downloadBlob(filename, new Blob([content], { type: mimeType }));
+  };
+
+  const openTextPreview = (content: string) => {
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank', 'noopener,noreferrer');
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  };
+
+  const escapeHtml = (value: string) => value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  const openPrintView = (title: string, content: string) => {
+    const printWindow = window.open('', '_blank', 'noopener,noreferrer');
+    if (!printWindow) {
+      notifyError('Unable to open print view', 'Allow pop-ups to print this report.');
+      return;
+    }
+    printWindow.document.write(`<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>${escapeHtml(title)}</title>
+    <style>
+      body { font-family: Arial, sans-serif; padding: 24px; color: #111827; }
+      pre { white-space: pre-wrap; font-size: 12px; line-height: 1.5; }
+      h1 { font-size: 18px; margin-bottom: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>${escapeHtml(title)}</h1>
+    <pre>${escapeHtml(content)}</pre>
+  </body>
+</html>`);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
+  };
+
+  const escapeCsv = (value: string) => `"${value.replace(/\"/g, '\"\"')}"`;
+
+  const buildCsv = (rows: string[][]) => rows.map(row => row.map(cell => escapeCsv(String(cell ?? ''))).join(',')).join('\n');
+
+  const getTableName = (tableId: string) => tables.find(t => t.id === tableId)?.name || tableId;
+
+  const formatEventDateRange = (start: string, end: string) => {
+    const s = new Date(start);
+    const e = new Date(end);
+    const dateOptions: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric', year: 'numeric' };
+    const timeOptions: Intl.DateTimeFormatOptions = { hour: 'numeric', minute: '2-digit' };
+    const isSameDay = s.toDateString() === e.toDateString();
+    if (isSameDay) {
+      return `${s.toLocaleDateString('en-US', dateOptions)} ${s.toLocaleTimeString('en-US', timeOptions)} - ${e.toLocaleTimeString('en-US', timeOptions)}`;
+    }
+    return `${s.toLocaleDateString('en-US', dateOptions)} - ${e.toLocaleDateString('en-US', dateOptions)}`;
+  };
+
+  const getInsightsByType = (type: InsightType, limit = 5) => {
+    return allInsights
+      .filter(i => i.type === type)
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .slice(0, limit);
+  };
+
+  const formatInsightLine = (insight: Insight, includeDescription = false) => {
+    const tableNames = insight.relatedTableIds.map(getTableName).join(', ');
+    const description = includeDescription && insight.description ? ` - ${insight.description}` : '';
+    const tables = tableNames ? ` (${tableNames})` : '';
+    return `${insight.title}${description}${tables}`;
+  };
+
+  const buildSummarySections = () => ({
+    themes: getInsightsByType(InsightType.THEME),
+    actionItems: getInsightsByType(InsightType.ACTION_ITEM),
+    questions: getInsightsByType(InsightType.QUESTION),
+    nuggets: getInsightsByType(InsightType.GOLDEN_NUGGET),
+  });
+
+  const buildSlackSummary = () => {
+    const sections = buildSummarySections();
+    const dateRange = formatEventDateRange(event.startDate, event.endDate);
+    const location = event.location ? `Location: ${event.location}` : 'Location: TBD';
+    const stats = `Tables: ${allEventTables.length} | Insights: ${allInsights.length} | Transcripts: ${allTranscripts.length}`;
+    const listOrNone = (items: Insight[], includeDescription = false) =>
+      items.length > 0 ? items.map(i => `- ${formatInsightLine(i, includeDescription)}`) : ['- None yet'];
+
+    return [
+      `*${event.name}*`,
+      `Date: ${dateRange}`,
+      location,
+      stats,
+      '',
+      '*Top Themes*',
+      ...listOrNone(sections.themes),
+      '',
+      '*Action Items*',
+      ...listOrNone(sections.actionItems, true),
+      '',
+      '*Open Questions*',
+      ...listOrNone(sections.questions, true),
+      '',
+      '*Golden Nuggets*',
+      ...listOrNone(sections.nuggets, true),
+    ].join('\n');
+  };
+
+  const buildMarkdownSummary = () => {
+    const sections = buildSummarySections();
+    const dateRange = formatEventDateRange(event.startDate, event.endDate);
+    const location = event.location ? event.location : 'TBD';
+    const stats = `Tables: ${allEventTables.length} | Insights: ${allInsights.length} | Transcripts: ${allTranscripts.length}`;
+    const listOrNone = (items: Insight[], includeDescription = false) =>
+      items.length > 0 ? items.map(i => `- ${formatInsightLine(i, includeDescription)}`) : ['- None yet'];
+
+    return [
+      `# ${event.name}`,
+      '',
+      `Date: ${dateRange}`,
+      `Location: ${location}`,
+      stats,
+      '',
+      '## Top Themes',
+      ...listOrNone(sections.themes),
+      '',
+      '## Action Items',
+      ...listOrNone(sections.actionItems, true),
+      '',
+      '## Open Questions',
+      ...listOrNone(sections.questions, true),
+      '',
+      '## Golden Nuggets',
+      ...listOrNone(sections.nuggets, true),
+    ].join('\n');
+  };
+
+  const buildTranscriptText = (segments: TranscriptSegment[]) => {
+    return segments.map(segment => {
+      const time = new Date(segment.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const tableName = getTableName(segment.tableId);
+      return `[${time}] ${tableName} - ${segment.speaker}: ${segment.text}`;
+    }).join('\n');
+  };
+
+  const buildTranscriptCsv = (segments: TranscriptSegment[]) => {
+    const rows = [
+      ['timestamp', 'table', 'speaker', 'text', 'sentiment'],
+      ...segments.map(segment => [
+        new Date(segment.timestamp).toISOString(),
+        getTableName(segment.tableId),
+        segment.speaker,
+        segment.text,
+        String(segment.sentiment),
+      ]),
+    ];
+    return buildCsv(rows);
+  };
+
+  const handleExport = async (format: string) => {
+    const slug = toSlug(event.name);
+    if (format === 'Slack') {
+      const summary = buildSlackSummary();
+      try {
+        await navigator.clipboard.writeText(summary);
+        alert('Slack summary copied to clipboard.');
+      } catch (error) {
+        notifyError('Failed to copy Slack summary', error);
+        downloadText(`${slug}-slack-summary.txt`, summary);
+      }
+      return;
+    }
+    if (format === 'Notion') {
+      const summary = buildMarkdownSummary();
+      downloadText(`${slug}-notion-summary.md`, summary, 'text/markdown');
+      return;
+    }
+    if (format === 'PDF') {
+      const summary = buildMarkdownSummary();
+      openPrintView(`${event.name} Report`, summary);
+      return;
+    }
+    if (format === 'CSV') {
+      const actionItems = allInsights.filter(i => i.type === InsightType.ACTION_ITEM);
+      const rows = [
+        ['title', 'description', 'tables', 'confidence', 'timestamp'],
+        ...actionItems.map(item => [
+          item.title,
+          item.description,
+          item.relatedTableIds.map(getTableName).join(', '),
+          String(item.confidence),
+          new Date(item.timestamp).toISOString(),
+        ]),
+      ];
+      downloadText(`${slug}-action-items.csv`, buildCsv(rows), 'text/csv');
+    }
   };
 
   const handleDownload = (type: string, scope: string) => {
-      alert(`Downloading ${scope} ${type}... (Mock)`);
+    const slug = toSlug(event.name);
+    const scopeSlug = toSlug(scope);
+    if (type.toLowerCase().includes('audio')) {
+      if (scope === 'Main Stage' && event.mainSession?.streamUrl) {
+        window.open(event.mainSession.streamUrl, '_blank', 'noopener,noreferrer');
+        return;
+      }
+      notifyError('Audio not available', 'Audio downloads require uploaded recordings.');
+      return;
+    }
+
+    const isAllTables = scope === 'All Tables';
+    const isCurrentTable = scope === 'Current Table';
+    const isMainStageScope = scope === 'Main Stage';
+
+    let segments: TranscriptSegment[] = [];
+    if (isAllTables) {
+      segments = allTranscripts;
+    } else if (isCurrentTable && selectedTableId) {
+      segments = allTranscripts.filter(t => t.tableId === selectedTableId);
+    } else if (isMainStageScope) {
+      segments = allTranscripts.filter(t => t.tableId === 'MAIN_STAGE');
+    }
+
+    if (segments.length === 0) {
+      notifyError('No transcripts available', 'There are no transcripts for this selection yet.');
+      return;
+    }
+
+    const text = buildTranscriptText(segments);
+    const csv = buildTranscriptCsv(segments);
+    const json = JSON.stringify(segments, null, 2);
+    downloadText(`${slug}-${scopeSlug}-transcript.txt`, text);
+    downloadText(`${slug}-${scopeSlug}-transcript.csv`, csv, 'text/csv');
+    downloadText(`${slug}-${scopeSlug}-transcript.json`, json, 'application/json');
   };
 
   const handleGenerateHighlightReel = () => {
-      setHighlightReelStatus('GENERATING');
-      setTimeout(() => {
-          setHighlightReelStatus('READY');
-      }, 3000);
+    const goldenNuggets = allInsights.filter(i => i.type === InsightType.GOLDEN_NUGGET);
+    if (goldenNuggets.length === 0) {
+      notifyError('No highlights found', 'Capture Golden Nuggets before generating a recap.');
+      return;
+    }
+
+    setHighlightReelStatus('GENERATING');
+
+    const content = [
+      `${event.name} - Highlight Reel`,
+      `Generated: ${new Date().toISOString()}`,
+      '',
+      ...goldenNuggets
+        .sort((a, b) => b.timestamp - a.timestamp)
+        .map((nugget, index) => {
+          const tablesList = nugget.relatedTableIds.map(getTableName).join(', ');
+          const time = new Date(nugget.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          return [
+            `${index + 1}. ${nugget.title}`,
+            nugget.description ? `Note: ${nugget.description}` : '',
+            tablesList ? `Tables: ${tablesList}` : '',
+            `Time: ${time}`,
+            '',
+          ].filter(Boolean).join('\n');
+        }),
+    ].join('\n');
+
+    setHighlightReelStatus('READY');
+    setHighlightReel({ title: `${event.name} Highlight Reel`, content });
   };
 
   const toggleMainSessionRecording = () => {
-      setEvent(prev => ({
-          ...prev,
-          mainSession: {
-              ...prev.mainSession,
-              status: prev.mainSession.status === 'RECORDING' ? 'COMPLETED' : 'RECORDING'
+      setEvent(prev => {
+          const isRecording = prev.mainSession.status === 'RECORDING';
+          const next = {
+              ...prev,
+              mainSession: {
+                  ...prev.mainSession,
+                  status: isRecording ? 'COMPLETED' : 'RECORDING',
+                  startTime: !isRecording ? (prev.mainSession.startTime || Date.now()) : prev.mainSession.startTime,
+              }
+          };
+          if (onUpdateEvent) {
+              onUpdateEvent(next);
           }
-      }));
+          return next;
+      });
   };
 
   return (
@@ -385,10 +670,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
                        <button 
                         onClick={() => setIsGovernanceModalOpen(true)}
                         className="flex items-center gap-2 px-3 py-1.5 bg-amber-50 text-amber-700 rounded-md border border-amber-200 hover:bg-amber-100 transition-colors font-medium text-sm"
-                        title="3 Pending Redaction Reviews"
+                        title="Redaction Review Queue"
                        >
                            <ShieldAlert className="w-4 h-4" />
-                           <span className="bg-amber-600 text-white text-[10px] px-1 rounded-full">3</span>
                        </button>
 
                        <button 
@@ -466,8 +750,27 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
             {isMainStage ? (
                 <div className="flex flex-col items-center justify-center h-64 text-slate-400 border-2 border-dashed border-slate-200 rounded-xl bg-slate-50/50">
                     <Radio className="w-12 h-12 mb-4 text-slate-300" />
-                    <h3 className="text-lg font-bold text-slate-600">Main Stage Audio Feed</h3>
-                    <p>Live analysis for plenary sessions is coming soon.</p>
+                    <h3 className="text-lg font-bold text-slate-600">Main Stage Live Feed</h3>
+                    <p className="text-sm text-slate-500">
+                        Status: {event.mainSession.status === 'RECORDING' ? 'Recording in progress' : event.mainSession.status === 'COMPLETED' ? 'Recording complete' : 'Ready to record'}
+                    </p>
+                    {event.mainSession.startTime && (
+                        <p className="text-xs text-slate-400 mt-1">
+                            Started at {new Date(event.mainSession.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </p>
+                    )}
+                    {event.mainSession.streamUrl ? (
+                        <button 
+                            onClick={() => handleDownload('Audio', 'Main Stage')}
+                            className="mt-3 text-indigo-600 font-medium hover:underline text-sm"
+                        >
+                            Open Stream
+                        </button>
+                    ) : (
+                        <p className="text-xs text-slate-400 mt-2">
+                            Add a stream URL in Settings to enable live monitoring.
+                        </p>
+                    )}
                     <button 
                         onClick={() => setIsOpsModalOpen(true)}
                         className="mt-4 text-indigo-600 font-medium hover:underline text-sm"
@@ -549,7 +852,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
                             </h3>
                             <div className="grid grid-cols-1 gap-4">
                                  {nuggets.map(insight => (
-                                    <InsightCard key={insight.id} insight={insight} onClick={() => {}} />
+                                    <InsightCard key={insight.id} insight={insight} />
                                  ))}
                             </div>
                         </div>
@@ -583,8 +886,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
                                 {standardInsights.map(insight => (
                                     <InsightCard 
                                         key={insight.id} 
-                                        insight={insight} 
-                                        onClick={() => {}} 
+                                        insight={insight}
                                     />
                                 ))}
                                 {filteredInsights.length === 0 && (
@@ -594,7 +896,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
                                 )}
                             </div>
                         ) : (
-                            <ThemeMap insights={filteredInsights} onSelectInsight={() => {}} />
+                            <ThemeMap insights={filteredInsights} />
                         )}
                     </div>
                 </>
@@ -633,25 +935,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
                  </div>
                  <div className="flex-1 overflow-y-auto p-6">
                     <form onSubmit={handleTableFormSubmit} className="space-y-4">
-                        {/* Bulk Import Mock - Only show on create */}
-                        {!editingTable && (
-                            <>
-                                <div className="bg-slate-50 border border-dashed border-slate-300 rounded-lg p-4 text-center mb-4 cursor-pointer hover:bg-slate-100 hover:border-indigo-400 transition-colors">
-                                    <Upload className="w-6 h-6 text-slate-400 mx-auto mb-2" />
-                                    <span className="text-sm font-medium text-slate-600 block">Bulk Import via CSV</span>
-                                    <span className="text-xs text-slate-400">Drag & drop or click to upload</span>
-                                </div>
-                                <div className="relative">
-                                    <div className="absolute inset-0 flex items-center" aria-hidden="true">
-                                        <div className="w-full border-t border-slate-200"></div>
-                                    </div>
-                                    <div className="relative flex justify-center">
-                                        <span className="px-2 bg-white text-xs text-slate-500 uppercase">Or Add Manually</span>
-                                    </div>
-                                </div>
-                            </>
-                        )}
-                        
                         <div>
                             <label className="block text-sm font-medium text-slate-700 mb-1">Table Name</label>
                             <input required value={newTableName} onChange={e => setNewTableName(e.target.value)} type="text" placeholder="e.g. Table C4" className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none" />
@@ -823,28 +1106,28 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
                                         <div className="w-8 h-8 bg-[#4A154B] rounded flex items-center justify-center text-white font-bold text-xs">S</div>
                                         <div>
                                             <div className="text-sm font-bold text-slate-900">Slack</div>
-                                            <div className="text-[10px] text-slate-500">Post summary to channel</div>
+                                            <div className="text-[10px] text-slate-500">Copy summary to clipboard</div>
                                         </div>
                                     </button>
                                      <button onClick={() => handleExport('Notion')} className="p-3 border border-slate-200 rounded-lg hover:bg-slate-50 flex items-center gap-3 transition-colors text-left">
                                         <div className="w-8 h-8 bg-black rounded flex items-center justify-center text-white font-bold text-xs">N</div>
                                         <div>
                                             <div className="text-sm font-bold text-slate-900">Notion</div>
-                                            <div className="text-[10px] text-slate-500">Create page with items</div>
+                                            <div className="text-[10px] text-slate-500">Download markdown notes</div>
                                         </div>
                                     </button>
                                      <button onClick={() => handleExport('PDF')} className="p-3 border border-slate-200 rounded-lg hover:bg-slate-50 flex items-center gap-3 transition-colors text-left">
                                         <div className="w-8 h-8 bg-red-600 rounded flex items-center justify-center text-white font-bold text-xs">P</div>
                                         <div>
-                                            <div className="text-sm font-bold text-slate-900">PDF Report</div>
-                                            <div className="text-[10px] text-slate-500">Executive summary</div>
+                                            <div className="text-sm font-bold text-slate-900">Print / PDF</div>
+                                            <div className="text-[10px] text-slate-500">Open print view</div>
                                         </div>
                                     </button>
                                      <button onClick={() => handleExport('CSV')} className="p-3 border border-slate-200 rounded-lg hover:bg-slate-50 flex items-center gap-3 transition-colors text-left">
                                         <div className="w-8 h-8 bg-emerald-600 rounded flex items-center justify-center text-white font-bold text-xs">X</div>
                                         <div>
                                             <div className="text-sm font-bold text-slate-900">CSV Dump</div>
-                                            <div className="text-[10px] text-slate-500">Raw action items</div>
+                                            <div className="text-[10px] text-slate-500">Download action items</div>
                                         </div>
                                     </button>
                                 </div>
@@ -869,37 +1152,44 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
                      {opsTab === 'DATA' && (
                         <div className="space-y-6">
                             
-                            {/* NEW: Highlight Reel Generator */}
+                            {/* Highlight Reel Generator */}
                             <div className="bg-gradient-to-r from-violet-50 to-indigo-50 border border-indigo-200 p-4 rounded-lg">
                                 <h4 className="text-sm font-bold text-indigo-900 mb-2 flex items-center gap-2">
-                                    <Video className="w-4 h-4 text-indigo-600" /> Automated Highlight Reel
+                                    <Video className="w-4 h-4 text-indigo-600" /> Highlight Reel Recap
                                 </h4>
                                 <p className="text-xs text-indigo-700 mb-4">
-                                    Stitches "Golden Nuggets" audio with transcript captions into a shareable recap video.
+                                    Compiles Golden Nuggets into a shareable recap note with timestamps.
                                 </p>
                                 
                                 {highlightReelStatus === 'IDLE' && (
                                     <button 
                                         onClick={handleGenerateHighlightReel}
-                                        className="w-full py-2 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 text-sm flex items-center justify-center gap-2"
+                                        disabled={eventNuggets.length === 0}
+                                        className="w-full py-2 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 text-sm flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
-                                        <Zap className="w-4 h-4" /> Generate 3-Min Recap
+                                        <Zap className="w-4 h-4" /> Generate Recap Notes
                                     </button>
                                 )}
 
                                 {highlightReelStatus === 'GENERATING' && (
                                     <div className="w-full py-2 bg-indigo-100 text-indigo-700 rounded-lg font-medium text-sm flex items-center justify-center gap-2 cursor-wait">
-                                        <Loader2 className="w-4 h-4 animate-spin" /> Stitching Clips...
+                                        <Loader2 className="w-4 h-4 animate-spin" /> Building recap...
                                     </div>
                                 )}
 
-                                {highlightReelStatus === 'READY' && (
+                                {highlightReelStatus === 'READY' && highlightReel && (
                                     <div className="flex gap-2">
-                                        <button className="flex-1 py-2 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700 text-sm flex items-center justify-center gap-2">
+                                        <button 
+                                            onClick={() => openTextPreview(highlightReel.content)}
+                                            className="flex-1 py-2 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700 text-sm flex items-center justify-center gap-2"
+                                        >
                                             <PlayCircle className="w-4 h-4" /> Preview
                                         </button>
-                                        <button className="flex-1 py-2 bg-white border border-emerald-300 text-emerald-700 rounded-lg font-medium hover:bg-emerald-50 text-sm flex items-center justify-center gap-2">
-                                            <Download className="w-4 h-4" /> Download MP4
+                                        <button 
+                                            onClick={() => downloadText(`${toSlug(event.name)}-highlight-reel.txt`, highlightReel.content)}
+                                            className="flex-1 py-2 bg-white border border-emerald-300 text-emerald-700 rounded-lg font-medium hover:bg-emerald-50 text-sm flex items-center justify-center gap-2"
+                                        >
+                                            <Download className="w-4 h-4" /> Download TXT
                                         </button>
                                     </div>
                                 )}
@@ -918,11 +1208,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
                                             <HardDrive className="w-5 h-5 text-indigo-600" />
                                             <div>
                                                 <div className="text-sm font-bold text-slate-800">Raw Audio Recording</div>
-                                                <div className="text-[10px] text-slate-500">MP3 • High Quality • {event.mainSession.status === 'RECORDING' ? 'In Progress' : 'Available'}</div>
+                                                <div className="text-[10px] text-slate-500">
+                                                    {event.mainSession.streamUrl ? 'Stream URL' : 'Stream URL required'} • {event.mainSession.status === 'RECORDING' ? 'In Progress' : 'Available'}
+                                                </div>
                                             </div>
                                         </div>
                                         <button onClick={() => handleDownload('Audio', 'Main Stage')} className="px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-bold hover:bg-slate-100">
-                                            Download
+                                            {event.mainSession.streamUrl ? 'Open Stream' : 'Download'}
                                         </button>
                                     </div>
                                     <div className="flex items-center justify-between p-3 border border-slate-200 rounded-lg bg-slate-50">
@@ -930,7 +1222,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
                                             <FileText className="w-5 h-5 text-indigo-600" />
                                             <div>
                                                 <div className="text-sm font-bold text-slate-800">Full Transcript</div>
-                                                <div className="text-[10px] text-slate-500">JSON / TXT</div>
+                                                <div className="text-[10px] text-slate-500">CSV / JSON / TXT</div>
                                             </div>
                                         </div>
                                         <button onClick={() => handleDownload('Transcript', 'Main Stage')} className="px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-bold hover:bg-slate-100">
@@ -965,7 +1257,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
                                             <div className="w-8 h-8 rounded bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold text-xs">TXT</div>
                                             <div>
                                                 <div className="text-sm font-bold text-slate-800">Complete Event Transcripts</div>
-                                                <div className="text-[10px] text-slate-500">Merged CSV + JSON</div>
+                                                <div className="text-[10px] text-slate-500">CSV / JSON / TXT</div>
                                             </div>
                                         </div>
                                         <button onClick={() => handleDownload('Transcripts', 'All Tables')} className="px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-bold hover:bg-slate-100">

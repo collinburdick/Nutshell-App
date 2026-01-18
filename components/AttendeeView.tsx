@@ -1,10 +1,10 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Event, Insight, InsightType } from '../types';
-import { MOCK_INSIGHTS } from '../constants';
 import { MessageSquare, ArrowRight, Shield, Clock, Star, Users, Sparkles, Loader2 } from 'lucide-react';
 import { clsx } from 'clsx';
-import { queryTranscripts } from '../services/openaiService';
+import { api, notifyError } from '../services/api';
+import { convertApiInsightToFrontend } from '../services/typeConverters';
 
 interface AttendeeViewProps {
   event: Event;
@@ -25,28 +25,65 @@ export const AttendeeView: React.FC<AttendeeViewProps> = ({ event, onExit }) => 
   // State for Organizer submission
   const [submitted, setSubmitted] = useState(false);
 
-  // Filter relevant insights for attendees (Themes & Action Items mostly)
-  const insights = MOCK_INSIGHTS.filter(i => 
-      i.type === InsightType.THEME || 
-      i.type === InsightType.ACTION_ITEM || 
-      i.type === InsightType.GOLDEN_NUGGET
-  );
+  const [insights, setInsights] = useState<Insight[]>([]);
+  const [insightsLoading, setInsightsLoading] = useState(true);
+
+  useEffect(() => {
+    const eventDbId = parseInt(event.id);
+    if (isNaN(eventDbId)) {
+      setInsightsLoading(false);
+      return;
+    }
+    
+    api.insights.list(eventDbId)
+      .then(apiInsights => {
+        const next = apiInsights.map(convertApiInsightToFrontend).filter(i => 
+          i.type === InsightType.THEME || 
+          i.type === InsightType.ACTION_ITEM || 
+          i.type === InsightType.GOLDEN_NUGGET
+        );
+        setInsights(next);
+      })
+      .catch(error => {
+        notifyError('Failed to fetch attendee insights', error);
+      })
+      .finally(() => setInsightsLoading(false));
+  }, [event.id]);
 
   const handleSubmit = async (e: React.FormEvent) => {
       e.preventDefault();
+      const eventDbId = parseInt(event.id, 10);
+      if (Number.isNaN(eventDbId)) {
+          notifyError('Invalid event ID', event.id);
+          return;
+      }
       
       if (target === 'AI') {
           setAiLoading(true);
-          const answer = await queryTranscripts(question);
-          setAiResponse(answer);
-          setAiLoading(false);
+          try {
+              const result = await api.ai.query(eventDbId, question);
+              setAiResponse(result.answer);
+          } catch (error) {
+              notifyError('Failed to query AI', error);
+          } finally {
+              setAiLoading(false);
+          }
       } else {
-          setSubmitted(true);
-          setTimeout(() => {
-              setQuestion('');
+          try {
+              await api.questions.create(eventDbId, {
+                  question,
+                  askedBy: userName || undefined,
+                  isAnonymous,
+              });
+              setSubmitted(true);
+              setTimeout(() => {
+                  setQuestion('');
+                  setSubmitted(false);
+              }, 2000);
+          } catch (error) {
+              notifyError('Failed to submit question', error);
               setSubmitted(false);
-              alert("Question submitted to the event moderators!");
-          }, 2000);
+          }
       }
   };
 
@@ -105,6 +142,12 @@ export const AttendeeView: React.FC<AttendeeViewProps> = ({ event, onExit }) => 
 
                     <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mt-4 mb-2">Key Takeaways So Far</h3>
                     
+                    {insightsLoading && (
+                        <div className="text-center text-slate-400 py-6">Loading insights...</div>
+                    )}
+                    {!insightsLoading && insights.length === 0 && (
+                        <div className="text-center text-slate-400 py-6">No insights available yet.</div>
+                    )}
                     {insights.map(item => (
                         <div key={item.id} className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
                             <div className="flex items-center gap-2 mb-2">

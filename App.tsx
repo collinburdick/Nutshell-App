@@ -10,7 +10,7 @@ import { SponsorDashboard } from './components/SponsorDashboard';
 import { LayoutDashboard, Compass, Settings, Users, Tv, BarChart, Loader2 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { Event, Table } from './types';
-import { api, wsClient } from './services/api';
+import { api, notifyError, wsClient } from './services/api';
 import { 
   convertApiEventToFrontend, 
   convertApiTableToFrontend 
@@ -78,10 +78,12 @@ const App: React.FC = () => {
 
   const loadEvents = async () => {
     try {
+      console.log('[App] Loading events');
       const apiEvents = await api.events.list();
+      console.log('[App] Loaded events', apiEvents.length);
       setEvents(apiEvents.map(convertApiEventToFrontend));
     } catch (error) {
-      console.error('Failed to load events:', error);
+      notifyError('Failed to load events', error);
     } finally {
       setLoading(false);
     }
@@ -89,21 +91,30 @@ const App: React.FC = () => {
 
   const loadTablesForEvent = async (eventId: number) => {
     try {
+      console.log('[App] Loading tables for event', eventId);
       const apiTables = await api.tables.list(eventId);
+      console.log('[App] Loaded tables', apiTables.length);
       setTables(apiTables.map(convertApiTableToFrontend));
     } catch (error) {
-      console.error('Failed to load tables:', error);
+      notifyError('Failed to load tables', error);
     }
   };
 
   const handleSelectEvent = async (eventId: string) => {
     setSelectedEventId(eventId);
     setAdminView(AdminView.DASHBOARD);
-    await loadTablesForEvent(parseInt(eventId));
+    const eventDbId = parseInt(eventId, 10);
+    if (Number.isNaN(eventDbId)) {
+      notifyError('Invalid event ID', eventId);
+      setTables([]);
+      return;
+    }
+    await loadTablesForEvent(eventDbId);
   };
 
   const handleCreateEvent = async (event: Event) => {
     try {
+      console.log('[App] Creating event', event.name);
       const created = await api.events.create({
         name: event.name,
         startDate: event.startDate,
@@ -112,15 +123,22 @@ const App: React.FC = () => {
         status: event.status,
         primaryColor: event.branding?.primaryColor,
       });
+      console.log('[App] Event created', created.id);
       setEvents(prev => [convertApiEventToFrontend(created), ...prev]);
     } catch (error) {
-      console.error('Failed to create event:', error);
+      notifyError('Failed to create event', error);
     }
   };
 
   const handleUpdateEvent = async (updatedEvent: Event) => {
     try {
-      const updated = await api.events.update(parseInt(updatedEvent.id), {
+      const eventDbId = parseInt(updatedEvent.id, 10);
+      if (Number.isNaN(eventDbId)) {
+        notifyError('Invalid event ID', updatedEvent.id);
+        return;
+      }
+      console.log('[App] Updating event', updatedEvent.id);
+      const updated = await api.events.update(eventDbId, {
         name: updatedEvent.name,
         startDate: updatedEvent.startDate,
         endDate: updatedEvent.endDate,
@@ -130,24 +148,47 @@ const App: React.FC = () => {
         logoUrl: updatedEvent.branding?.logoUrl,
         privacyMode: updatedEvent.privacyMode,
         mainSessionStatus: updatedEvent.mainSession?.status,
+        mainSessionStartTime: updatedEvent.mainSession?.startTime
+          ? new Date(updatedEvent.mainSession.startTime).toISOString()
+          : null,
+        mainSessionDuration: updatedEvent.mainSession?.duration || 0,
         streamUrl: updatedEvent.mainSession?.streamUrl,
       });
+      if (updatedEvent.defaultAgenda) {
+        await api.agenda.setForEvent(eventDbId, updatedEvent.defaultAgenda.map(item => ({
+          phase: item.phase,
+          text: item.text,
+          durationMinutes: item.durationMinutes,
+        })));
+      }
       setEvents(prev => prev.map(e => e.id === updatedEvent.id ? convertApiEventToFrontend(updated) : e));
     } catch (error) {
-      console.error('Failed to update event:', error);
+      notifyError('Failed to update event', error);
       setEvents(prev => prev.map(e => e.id === updatedEvent.id ? updatedEvent : e));
     }
   };
 
   const handleAddTable = async (newTable: Table) => {
     try {
-      const eventId = parseInt(newTable.eventId);
+      console.log('[App] Creating table', newTable.name);
+      const eventId = parseInt(newTable.eventId, 10);
+      if (Number.isNaN(eventId)) {
+        notifyError('Invalid event ID', newTable.eventId);
+        return;
+      }
       const created = await api.tables.create(eventId, {
         name: newTable.name,
         session: newTable.session,
         topic: newTable.topic,
       });
       const convertedTable = convertApiTableToFrontend(created);
+      if (newTable.customAgenda && newTable.customAgenda.length > 0) {
+        await api.agenda.setForTable(created.id, newTable.customAgenda.map(item => ({
+          phase: item.phase,
+          text: item.text,
+          durationMinutes: item.durationMinutes,
+        })));
+      }
       setTables(prev => [...prev, convertedTable]);
       setEvents(prev => prev.map(e => 
         e.id === newTable.eventId 
@@ -155,13 +196,14 @@ const App: React.FC = () => {
           : e
       ));
     } catch (error) {
-      console.error('Failed to create table:', error);
+      notifyError('Failed to create table', error);
     }
   };
 
   const handleUpdateTable = async (updatedTable: Table) => {
     try {
       if (updatedTable._dbId) {
+        console.log('[App] Updating table', updatedTable._dbId);
         await api.tables.update(updatedTable._dbId, {
           name: updatedTable.name,
           session: updatedTable.session,
@@ -169,10 +211,16 @@ const App: React.FC = () => {
           status: updatedTable.status,
           isHot: updatedTable.isHot,
         });
+        const agendaItems = (updatedTable.customAgenda || []).map(item => ({
+          phase: item.phase,
+          text: item.text,
+          durationMinutes: item.durationMinutes,
+        }));
+        await api.agenda.setForTable(updatedTable._dbId, agendaItems);
       }
       setTables(prev => prev.map(t => t.id === updatedTable.id ? updatedTable : t));
     } catch (error) {
-      console.error('Failed to update table:', error);
+      notifyError('Failed to update table', error);
     }
   };
 
@@ -181,6 +229,7 @@ const App: React.FC = () => {
     if (!tableToDelete?._dbId) return;
     
     try {
+      console.log('[App] Deleting table', tableToDelete._dbId);
       await api.tables.delete(tableToDelete._dbId);
       setTables(prev => prev.filter(t => t.id !== tableId));
       if (tableToDelete) {
@@ -191,7 +240,7 @@ const App: React.FC = () => {
         ));
       }
     } catch (error) {
-      console.error('Failed to delete table:', error);
+      notifyError('Failed to delete table', error);
     }
   };
 
@@ -200,12 +249,18 @@ const App: React.FC = () => {
     if (!selectedEvent) return;
     
     try {
+      const eventDbId = parseInt(selectedEvent.id, 10);
+      if (Number.isNaN(eventDbId)) {
+        notifyError('Invalid event ID', selectedEvent.id);
+        return;
+      }
+      console.log('[App] Sending nudge', { eventId: selectedEvent.id, tableIds });
       const dbTableIds = tableIds.map(id => {
         const table = tables.find(t => t.id === id);
         return table?._dbId;
-      }).filter(Boolean) as number[];
+      }).filter((id): id is number => typeof id === 'number');
       
-      await api.broadcast(parseInt(selectedEvent.id), message, dbTableIds);
+      await api.broadcast(eventDbId, message, dbTableIds);
       
       setNotices(prev => {
         const next = { ...prev };
@@ -215,7 +270,7 @@ const App: React.FC = () => {
         return next;
       });
     } catch (error) {
-      console.error('Failed to send nudge:', error);
+      notifyError('Failed to send nudge', error);
     }
   };
 
@@ -333,7 +388,7 @@ const App: React.FC = () => {
                     });
                     setFacilitatorTableId(converted.id);
                   } catch (error) {
-                    alert('Table not found. Please check the code.');
+                    notifyError('Table not found. Please check the code.', error);
                   }
                 } else if (tables.length > 0) {
                   setFacilitatorTableId(tables[0].id);

@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { Search, Sparkles, MessageSquare, ArrowRight, Loader2 } from 'lucide-react';
-import { queryTranscripts } from '../services/openaiService';
-import ReactMarkdown from 'react-markdown'; // Actually, we'll implement a simple renderer or just text to avoid dep issues if possible. 
-// Standard React doesn't have markdown renderer built-in. I will assume raw text or basic mapping for this demo.
-// To keep it dependency-free for this environment, I'll just render text with whitespace preservation.
+import { api, notifyError } from '../services/api';
 
-export const Explore: React.FC = () => {
+interface ExploreProps {
+  eventId: number;
+}
+
+export const Explore: React.FC<ExploreProps> = ({ eventId }) => {
   const [query, setQuery] = useState('');
   const [history, setHistory] = useState<{q: string, a: string}[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -15,10 +16,19 @@ export const Explore: React.FC = () => {
     if (!query.trim()) return;
 
     setIsLoading(true);
-    const answer = await queryTranscripts(query);
-    setHistory(prev => [{q: query, a: answer}, ...prev]);
-    setQuery('');
-    setIsLoading(false);
+    try {
+      if (!Number.isFinite(eventId)) {
+        notifyError('Invalid event ID', String(eventId));
+        return;
+      }
+      const result = await api.ai.query(eventId, query);
+      setHistory(prev => [{q: query, a: result.answer}, ...prev]);
+      setQuery('');
+    } catch (error) {
+      notifyError('Failed to query AI', error);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

@@ -15,6 +15,13 @@ import QRCode from "qrcode";
 const app = express();
 app.use(cors());
 app.use(express.json());
+const shouldLog = process.env.NODE_ENV !== "production";
+if (shouldLog) {
+  app.use((req, _res, next) => {
+    console.log(`[HTTP] ${req.method} ${req.path}`);
+    next();
+  });
+}
 
 const httpServer = createServer(app);
 const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
@@ -24,9 +31,15 @@ const clients = new Map<string, WebSocket>();
 wss.on("connection", (ws, req) => {
   const clientId = uuidv4();
   clients.set(clientId, ws);
+  if (shouldLog) {
+    console.log("[WS] Client connected", clientId);
+  }
   
   ws.on("close", () => {
     clients.delete(clientId);
+    if (shouldLog) {
+      console.log("[WS] Client disconnected", clientId);
+    }
   });
 });
 
@@ -183,6 +196,45 @@ app.put("/api/events/:id", async (req, res) => {
   }
 });
 
+app.put("/api/events/:eventId/agenda", async (req, res) => {
+  try {
+    const eventId = parseInt(req.params.eventId);
+    if (Number.isNaN(eventId)) {
+      return res.status(400).json({ error: "Invalid event ID" });
+    }
+    const { items } = req.body as { items?: { phase: string; text: string; durationMinutes?: number }[] };
+    if (items && !Array.isArray(items)) {
+      return res.status(400).json({ error: "Agenda items must be an array" });
+    }
+    const agenda = Array.isArray(items) ? items : [];
+    const invalidItem = agenda.find(item => !item?.phase?.trim() || !item?.text?.trim());
+    if (invalidItem) {
+      return res.status(400).json({ error: "Agenda items require phase and text" });
+    }
+    
+    await db.delete(agendaItems)
+      .where(and(eq(agendaItems.eventId, eventId), sql`${agendaItems.tableId} is null`));
+    
+    const inserted = [];
+    for (const [index, item] of agenda.entries()) {
+      const [saved] = await db.insert(agendaItems).values({
+        eventId,
+        tableId: null,
+        phase: item.phase,
+        text: item.text,
+        durationMinutes: item.durationMinutes ?? 10,
+        sortOrder: index,
+      }).returning();
+      inserted.push(saved);
+    }
+    
+    res.json(inserted);
+  } catch (error) {
+    console.error("Failed to update event agenda:", error);
+    res.status(500).json({ error: "Failed to update event agenda" });
+  }
+});
+
 app.delete("/api/events/:id", async (req, res) => {
   try {
     const eventId = parseInt(req.params.id);
@@ -247,6 +299,44 @@ app.put("/api/tables/:id", async (req, res) => {
     res.json(updated);
   } catch (error) {
     res.status(500).json({ error: "Failed to update table" });
+  }
+});
+
+app.put("/api/tables/:tableId/agenda", async (req, res) => {
+  try {
+    const tableId = parseInt(req.params.tableId);
+    if (Number.isNaN(tableId)) {
+      return res.status(400).json({ error: "Invalid table ID" });
+    }
+    const { items } = req.body as { items?: { phase: string; text: string; durationMinutes?: number }[] };
+    if (items && !Array.isArray(items)) {
+      return res.status(400).json({ error: "Agenda items must be an array" });
+    }
+    const agenda = Array.isArray(items) ? items : [];
+    const invalidItem = agenda.find(item => !item?.phase?.trim() || !item?.text?.trim());
+    if (invalidItem) {
+      return res.status(400).json({ error: "Agenda items require phase and text" });
+    }
+    
+    await db.delete(agendaItems).where(eq(agendaItems.tableId, tableId));
+    
+    const inserted = [];
+    for (const [index, item] of agenda.entries()) {
+      const [saved] = await db.insert(agendaItems).values({
+        eventId: null,
+        tableId,
+        phase: item.phase,
+        text: item.text,
+        durationMinutes: item.durationMinutes ?? 10,
+        sortOrder: index,
+      }).returning();
+      inserted.push(saved);
+    }
+    
+    res.json(inserted);
+  } catch (error) {
+    console.error("Failed to update table agenda:", error);
+    res.status(500).json({ error: "Failed to update table agenda" });
   }
 });
 

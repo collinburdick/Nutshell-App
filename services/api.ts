@@ -1,5 +1,11 @@
 const API_BASE = '/api';
 
+export function notifyError(context: string, error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`[${context}]`, error);
+  alert(`${context}\n${message}`);
+}
+
 export interface ApiEvent {
   id: number;
   name: string;
@@ -108,6 +114,8 @@ export interface ApiNotice {
 }
 
 async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
+  const method = options?.method || 'GET';
+  console.log(`[API] ${method} ${path}`);
   const response = await fetch(`${API_BASE}${path}`, {
     headers: {
       'Content-Type': 'application/json',
@@ -118,7 +126,9 @@ async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
   
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Request failed' }));
-    throw new Error(error.error || 'Request failed');
+    const message = error.error || 'Request failed';
+    console.error(`[API error] ${method} ${path}`, message);
+    throw new Error(message);
   }
   
   return response.json();
@@ -139,6 +149,19 @@ export const api = {
     delete: (id: number) => fetchApi<{ success: boolean }>(`/events/${id}`, {
       method: 'DELETE',
     }),
+  },
+
+  agenda: {
+    setForEvent: (eventId: number, items: { phase: string; text: string; durationMinutes: number }[]) =>
+      fetchApi<ApiAgendaItem[]>(`/events/${eventId}/agenda`, {
+        method: 'PUT',
+        body: JSON.stringify({ items }),
+      }),
+    setForTable: (tableId: number, items: { phase: string; text: string; durationMinutes: number }[]) =>
+      fetchApi<ApiAgendaItem[]>(`/tables/${tableId}/agenda`, {
+        method: 'PUT',
+        body: JSON.stringify({ items }),
+      }),
   },
   
   tables: {
@@ -287,7 +310,7 @@ export class WebSocketClient {
           handlers.forEach(handler => handler(data));
         }
       } catch (e) {
-        console.error('Failed to parse WebSocket message:', e);
+        notifyError('WebSocket message parse failed', e);
       }
     };
     
@@ -296,11 +319,13 @@ export class WebSocketClient {
       if (this.reconnectAttempts < this.maxReconnectAttempts) {
         this.reconnectAttempts++;
         setTimeout(() => this.connect(), 1000 * this.reconnectAttempts);
+      } else {
+        notifyError('WebSocket connection lost', 'Max reconnect attempts reached.');
       }
     };
     
     this.ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
+      notifyError('WebSocket error', error);
     };
   }
   

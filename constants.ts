@@ -39,7 +39,6 @@ export const MOCK_EVENTS: Event[] = [
     defaultAgenda: DEFAULT_AGENDA,
     branding: {
         primaryColor: '#4f46e5', // Indigo 600
-        logoUrl: 'https://via.placeholder.com/150',
     },
     tracks: MOCK_TRACKS,
     facilitators: MOCK_FACILITATORS,

@@ -1,11 +1,12 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Table, TableStatus, Insight, InsightType, AgendaItem } from '../types';
+import { Table, Insight, InsightType, AgendaItem } from '../types';
 import { Mic, MicOff, Pause, Play, Star, Clock, ChevronDown, ChevronUp, LogOut, Megaphone, X, CheckCircle, Trash2, ArrowRight, Save, ShieldCheck, Sparkles, Smartphone, LogIn, AlertCircle, MessageSquare, Lightbulb, RefreshCw, Loader2 } from 'lucide-react';
 import { clsx } from 'clsx';
-import { api, wsClient } from '../services/api';
-import { convertApiInsightToFrontend, convertApiTranscriptToFrontend, getDbIdFromTable } from '../services/typeConverters';
+import { api, notifyError, wsClient } from '../services/api';
+import { convertApiInsightToFrontend, getDbIdFromTable } from '../services/typeConverters';
 import type { ApiInsight, ApiTranscript } from '../services/api';
+import QRCode from 'qrcode';
 
 declare global {
   interface Window {
@@ -37,8 +38,10 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
   const [localSummary, setLocalSummary] = useState<string[]>([]);
   const [showNuggetToast, setShowNuggetToast] = useState(false);
   const [voiceCommandActive, setVoiceCommandActive] = useState(false);
+  const [pendingVoiceCommand, setPendingVoiceCommand] = useState(false);
   
   const activeAgenda = table.customAgenda && table.customAgenda.length > 0 ? table.customAgenda : defaultAgenda;
+  const transferCode = `${table.id}-TRF`;
 
   const [showCoachTip, setShowCoachTip] = useState(false);
   const [coachTipText, setCoachTipText] = useState("Tip: We haven't heard much about *budget implications* yet. Consider asking about costs.");
@@ -49,6 +52,7 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
   
   const [activeNotice, setActiveNotice] = useState<string | null>(null);
   const [showHandoffCode, setShowHandoffCode] = useState(false);
+  const [handoffQrCode, setHandoffQrCode] = useState<string | null>(null);
 
   const [sessionSummary, setSessionSummary] = useState<SessionSummary>({
     summary: "Start recording to capture the discussion...",
@@ -63,6 +67,9 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
   const [transcriptsSent, setTranscriptsSent] = useState(0);
   
   const recognitionRef = useRef<any>(null);
+  const voiceCommandRecognitionRef = useRef<any>(null);
+  const voiceCommandTimeoutRef = useRef<number | null>(null);
+  const pendingVoiceCommandRef = useRef(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
@@ -83,7 +90,7 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
         .map(convertApiInsightToFrontend);
       setActionItems(items);
     } catch (error) {
-      console.error('Failed to fetch action items:', error);
+      notifyError('Failed to fetch action items', error);
     }
   }, [table]);
 
@@ -109,7 +116,7 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
         setShowCoachTip(true);
       }
     } catch (error) {
-      console.error('Failed to get coach tip:', error);
+      notifyError('Failed to get coach tip', error);
     }
   }, [table, activeAgenda]);
 
@@ -128,6 +135,20 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
     }
   }, []);
 
+  useEffect(() => {
+    pendingVoiceCommandRef.current = pendingVoiceCommand;
+  }, [pendingVoiceCommand]);
+
+  useEffect(() => {
+    if (!showHandoffCode) {
+      setHandoffQrCode(null);
+      return;
+    }
+    QRCode.toDataURL(transferCode, { margin: 1, width: 192 })
+      .then(setHandoffQrCode)
+      .catch((error) => notifyError('Failed to generate transfer QR code', error));
+  }, [showHandoffCode, transferCode]);
+
   const fetchSessionSummary = useCallback(async () => {
     const tableDbId = getDbIdFromTable(table);
     if (!tableDbId) return;
@@ -137,7 +158,7 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
       const summary = await api.ai.getSessionSummary(tableDbId);
       setSessionSummary(summary);
     } catch (error) {
-      console.error('Failed to fetch session summary:', error);
+      notifyError('Failed to fetch session summary', error);
     }
     setSummaryLoading(false);
   }, [table]);
@@ -203,26 +224,31 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
         setCurrentTranscript(interimTranscript);
         
         if (finalTranscript.trim()) {
+          const transcriptText = finalTranscript.trim();
           setCurrentTranscript('');
+          if (pendingVoiceCommandRef.current) {
+            void createActionItemFromText(transcriptText);
+            clearVoiceCommandState();
+          }
           try {
             await api.transcripts.create(tableDbId, {
               speaker: 'Participant',
-              text: finalTranscript.trim(),
+              text: transcriptText,
               isQuote: false
             });
             setTranscriptsSent(prev => prev + 1);
             setLocalSummary(prev => [
-              `Captured: ${finalTranscript.trim().substring(0, 50)}...`,
+              `Captured: ${transcriptText.substring(0, 50)}...`,
               ...prev
             ].slice(0, 3));
           } catch (error) {
-            console.error('Failed to save transcript:', error);
+            notifyError('Failed to save transcript', error);
           }
         }
       };
       
       recognitionRef.current.onerror = (event: any) => {
-        console.error('Speech recognition error:', event.error);
+        notifyError('Speech recognition error', event.error);
         if (event.error === 'not-allowed') {
           setSpeechSupported(false);
         }
@@ -233,7 +259,7 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
           try {
             recognitionRef.current.start();
           } catch (e) {
-            console.error('Failed to restart recognition:', e);
+            notifyError('Failed to restart recognition', e);
           }
         }
       };
@@ -244,7 +270,7 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
       requestAnimationFrame(updateMicLevel);
       
     } catch (error) {
-      console.error('Failed to start recording:', error);
+      notifyError('Failed to start recording', error);
       setSpeechSupported(false);
     }
   };
@@ -263,6 +289,7 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
       audioContextRef.current.close();
       audioContextRef.current = null;
     }
+    clearVoiceCommandState();
     setIsRecording(false);
     setMicLevel(0);
     setCurrentTranscript('');
@@ -314,7 +341,7 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
         setLocalSummary(summaries);
       }
     } catch (error) {
-      console.error('Failed to fetch recent summary:', error);
+      notifyError('Failed to fetch recent summary', error);
     }
   }, [table]);
 
@@ -326,7 +353,7 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
     wsClient.connect();
     const tableDbId = getDbIdFromTable(table);
     
-    const unsubTranscript = wsClient.subscribe('transcript', (data: ApiTranscript) => {
+    const unsubTranscript = wsClient.subscribe('transcript_added', (data: ApiTranscript) => {
       if (tableDbId && data.tableId === tableDbId) {
         const sentiment = data.sentiment || 0;
         const prefix = sentiment > 0.3 ? 'Positive: ' : 
@@ -336,7 +363,7 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
       }
     });
     
-    const unsubInsight = wsClient.subscribe('insight', (data: ApiInsight) => {
+    const unsubInsight = wsClient.subscribe('insight_added', (data: ApiInsight) => {
       if (tableDbId && data.relatedTableIds.includes(tableDbId) && 
           (data.type === 'ACTION_ITEM' || data.type === 'QUESTION')) {
         const insight = convertApiInsightToFrontend(data);
@@ -356,30 +383,114 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  const handleGoldenNugget = () => {
-    setShowNuggetToast(true);
-    setTimeout(() => setShowNuggetToast(false), 3000);
+  const clearVoiceCommandState = () => {
+      setVoiceCommandActive(false);
+      setPendingVoiceCommand(false);
+      pendingVoiceCommandRef.current = false;
+      if (voiceCommandTimeoutRef.current) {
+          window.clearTimeout(voiceCommandTimeoutRef.current);
+          voiceCommandTimeoutRef.current = null;
+      }
+  };
+
+  const createActionItemFromText = async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      const eventDbId = parseInt(table.eventId);
+      const tableDbId = getDbIdFromTable(table);
+      if (isNaN(eventDbId) || !tableDbId) {
+          notifyError('Unable to capture action item', 'Missing table context.');
+          return;
+      }
+      const title = trimmed.length > 60 ? `${trimmed.slice(0, 57)}...` : trimmed;
+      try {
+          const created = await api.insights.create(eventDbId, {
+              type: InsightType.ACTION_ITEM,
+              title,
+              description: trimmed,
+              confidence: 0.9,
+              relatedTableIds: [tableDbId],
+              evidenceCount: 1,
+          });
+          const insight = convertApiInsightToFrontend(created);
+          setActionItems(prev => [insight, ...prev.filter(i => i.id !== insight.id)]);
+          setLocalSummary(prev => [`Action item captured: ${title}`, ...prev].slice(0, 3));
+      } catch (error) {
+          notifyError('Failed to save action item', error);
+      }
+  };
+
+  const handleGoldenNugget = async () => {
+      const note = window.prompt('Enter the quote or insight to mark as a Golden Nugget.');
+      if (!note) return;
+      const trimmed = note.trim();
+      if (!trimmed) return;
+      const eventDbId = parseInt(table.eventId);
+      const tableDbId = getDbIdFromTable(table);
+      if (isNaN(eventDbId) || !tableDbId) {
+          notifyError('Unable to mark Golden Nugget', 'Missing table context.');
+          return;
+      }
+      const title = trimmed.length > 60 ? `${trimmed.slice(0, 57)}...` : trimmed;
+      try {
+          await api.insights.create(eventDbId, {
+              type: InsightType.GOLDEN_NUGGET,
+              title,
+              description: trimmed,
+              confidence: 1,
+              relatedTableIds: [tableDbId],
+              evidenceCount: 1,
+          });
+          setShowNuggetToast(true);
+          setTimeout(() => setShowNuggetToast(false), 3000);
+          setLocalSummary(prev => [`Golden Nugget captured: ${title}`, ...prev].slice(0, 3));
+      } catch (error) {
+          notifyError('Failed to save Golden Nugget', error);
+      }
   };
 
   const handleVoiceCommandTrigger = () => {
+      if (voiceCommandActive) return;
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+          const manual = window.prompt('Type the action item to capture.');
+          if (manual) {
+              void createActionItemFromText(manual);
+          }
+          return;
+      }
+      if (isRecording) {
+          setPendingVoiceCommand(true);
+          pendingVoiceCommandRef.current = true;
+          setVoiceCommandActive(true);
+          if (voiceCommandTimeoutRef.current) {
+              window.clearTimeout(voiceCommandTimeoutRef.current);
+          }
+          voiceCommandTimeoutRef.current = window.setTimeout(() => {
+              clearVoiceCommandState();
+          }, 10000);
+          return;
+      }
       setVoiceCommandActive(true);
-      // Simulate listening and then action
-      setTimeout(() => {
-          setVoiceCommandActive(false);
-          // Simulate the result of a voice command
-          const newAi: Insight = {
-               id: `vc_${Date.now()}`,
-               type: InsightType.ACTION_ITEM,
-               title: 'Voice Capture: Follow up on Licensing',
-               description: 'Captured via voice command "Hey Nutshell, flag that action item"',
-               confidence: 1,
-               relatedTableIds: [table.id],
-               evidenceCount: 1,
-               timestamp: Date.now()
-          };
-          setActionItems(prev => [newAi, ...prev]);
-          alert("✓ Voice Command Recognized: Action Item Added");
-      }, 2000);
+      const recognition = new SpeechRecognition();
+      voiceCommandRecognitionRef.current = recognition;
+      recognition.continuous = false;
+      recognition.interimResults = false;
+      recognition.lang = 'en-US';
+      recognition.onresult = (event: any) => {
+          const transcript = event.results?.[0]?.[0]?.transcript;
+          if (transcript) {
+              void createActionItemFromText(transcript);
+          }
+      };
+      recognition.onerror = (event: any) => {
+          notifyError('Voice command failed', event.error);
+      };
+      recognition.onend = () => {
+          voiceCommandRecognitionRef.current = null;
+          clearVoiceCommandState();
+      };
+      recognition.start();
   };
 
   const toggleItemReview = (id: string) => {
@@ -413,13 +524,17 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
               </p>
               
               <div className="bg-white p-6 rounded-2xl mb-6">
-                  <div className="w-48 h-48 bg-slate-900 rounded-lg flex items-center justify-center text-slate-500 text-xs">
-                      [QR CODE PLACEHOLDER]
-                  </div>
+                  {handoffQrCode ? (
+                      <img src={handoffQrCode} alt="Transfer QR code" className="w-48 h-48" />
+                  ) : (
+                      <div className="w-48 h-48 bg-slate-900 rounded-lg flex items-center justify-center text-slate-500 text-xs">
+                          Generating QR code...
+                      </div>
+                  )}
               </div>
 
               <div className="bg-slate-800 px-6 py-3 rounded-xl border border-slate-700 font-mono text-2xl tracking-widest font-bold mb-8">
-                  {table.id}-TRF
+                  {transferCode}
               </div>
 
               <button 
@@ -756,7 +871,7 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
 
       </div>
 
-      {/* Voice Command Overlay - Simulated */}
+      {/* Voice Command Overlay */}
       {voiceCommandActive && (
           <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-900/80 backdrop-blur-sm">
               <div className="flex flex-col items-center">
@@ -764,7 +879,7 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
                       <Mic className="w-10 h-10 text-white" />
                   </div>
                   <h3 className="text-2xl font-bold text-white mb-1">Listening...</h3>
-                  <p className="text-slate-400">"Hey Nutshell, flag that action item"</p>
+                  <p className="text-slate-400">Say the action item you want captured.</p>
               </div>
           </div>
       )}

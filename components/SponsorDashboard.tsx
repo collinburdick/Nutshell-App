@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { Event, Sponsor } from '../types';
-import { api } from '../services/api';
+import { api, notifyError } from '../services/api';
 import { Radar, BarChart2, TrendingUp, TrendingDown, Users, Activity, Lock, ArrowLeft, Loader2 } from 'lucide-react';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 import { clsx } from 'clsx';
@@ -32,7 +32,7 @@ export const SponsorDashboard: React.FC<SponsorDashboardProps> = ({ event, spons
       setTotalMentions(result.totalMentions);
       setAvgOverallSentiment(result.avgSentiment);
     } catch (error) {
-      console.error('Failed to fetch sponsor stats:', error);
+      notifyError('Failed to fetch sponsor stats', error);
     }
     setIsLoading(false);
   }, [event.id, sponsor.id]);
