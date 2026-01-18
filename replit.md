@@ -97,6 +97,12 @@ API requests are proxied from `/api` to the backend.
 - Jan 18, 2026: Deleted geminiService.ts (all AI now via backend OpenAI)
 - Jan 18, 2026: Added table ID mapping utilities (createTableIdMapper) for proper join code handling
 - Jan 18, 2026: Added Share Facilitator Codes feature - admins can share table join codes via copy, email, or SMS
+- Jan 18, 2026: Replaced browser Web Speech API with OpenAI Whisper for reliable transcription
+  - New /api/ai/transcribe endpoint accepts audio files and uses Whisper for speech-to-text
+  - FacilitatorScreen records 10-second audio chunks using MediaRecorder API
+  - Audio is sent to backend for OpenAI processing (no browser dependencies)
+  - Sentiment analysis via GPT-4o-mini for each transcript
+  - Visual processing indicators show recording/uploading/transcribing status
 
 ## ID Mapping
 The application uses two ID systems:
