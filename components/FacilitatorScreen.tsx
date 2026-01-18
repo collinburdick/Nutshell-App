@@ -66,7 +66,13 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
   const [speechSupported, setSpeechSupported] = useState(true);
   const [transcriptsSent, setTranscriptsSent] = useState(0);
   
-  const recognitionRef = useRef<any>(null);
+  const [processingStatus, setProcessingStatus] = useState<'idle' | 'recording' | 'uploading' | 'transcribing'>('idle');
+  const [lastTranscribed, setLastTranscribed] = useState<string>("");
+  const [audioChunksCount, setAudioChunksCount] = useState(0);
+  
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingIntervalRef = useRef<number | null>(null);
   const voiceCommandRecognitionRef = useRef<any>(null);
   const voiceCommandTimeoutRef = useRef<number | null>(null);
   const pendingVoiceCommandRef = useRef(false);
@@ -128,10 +134,8 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
   }, [fetchCoachTip]);
 
   useEffect(() => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       setSpeechSupported(false);
-      return;
     }
   }, []);
 
@@ -173,15 +177,52 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
     }
   }, [transcriptsSent, fetchSessionSummary]);
 
+  const sendAudioForTranscription = async (audioBlob: Blob) => {
+    const tableDbId = getDbIdFromTable(table);
+    if (!tableDbId || audioBlob.size < 1000) return;
+    
+    setProcessingStatus('uploading');
+    setAudioChunksCount(prev => prev + 1);
+    
+    try {
+      const formData = new FormData();
+      formData.append('audio', audioBlob, 'recording.webm');
+      formData.append('tableId', tableDbId.toString());
+      formData.append('speaker', 'Participant');
+      
+      setProcessingStatus('transcribing');
+      
+      const response = await fetch('/api/ai/transcribe', {
+        method: 'POST',
+        body: formData,
+      });
+      
+      const result = await response.json();
+      
+      if (result.success && result.text) {
+        setLastTranscribed(result.text);
+        setTranscriptsSent(prev => prev + 1);
+        setLocalSummary(prev => [
+          `Transcribed: ${result.text.substring(0, 50)}${result.text.length > 50 ? '...' : ''}`,
+          ...prev
+        ].slice(0, 5));
+      } else if (result.error) {
+        console.error('[Transcription error]', result.error);
+      }
+    } catch (error) {
+      console.error('[Upload error]', error);
+    } finally {
+      if (isRecordingRef.current) {
+        setProcessingStatus('recording');
+      } else {
+        setProcessingStatus('idle');
+      }
+    }
+  };
+
   const startRecording = async () => {
     const tableDbId = getDbIdFromTable(table);
     if (!tableDbId) return;
-
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      setSpeechSupported(false);
-      return;
-    }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -203,84 +244,60 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
         }
       };
       
-      recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = true;
-      recognitionRef.current.interimResults = true;
-      recognitionRef.current.lang = 'en-US';
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
+        ? 'audio/webm;codecs=opus' 
+        : 'audio/webm';
       
-      recognitionRef.current.onresult = async (event: any) => {
-        let interimTranscript = '';
-        let finalTranscript = '';
-        
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const transcript = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            finalTranscript += transcript;
-          } else {
-            interimTranscript += transcript;
-          }
-        }
-        
-        setCurrentTranscript(interimTranscript);
-        
-        if (finalTranscript.trim()) {
-          const transcriptText = finalTranscript.trim();
-          setCurrentTranscript('');
-          if (pendingVoiceCommandRef.current) {
-            void createActionItemFromText(transcriptText);
-            clearVoiceCommandState();
-          }
-          try {
-            await api.transcripts.create(tableDbId, {
-              speaker: 'Participant',
-              text: transcriptText,
-              isQuote: false
-            });
-            setTranscriptsSent(prev => prev + 1);
-            setLocalSummary(prev => [
-              `Captured: ${transcriptText.substring(0, 50)}...`,
-              ...prev
-            ].slice(0, 3));
-          } catch (error) {
-            notifyError('Failed to save transcript', error);
-          }
+      mediaRecorderRef.current = new MediaRecorder(stream, { mimeType });
+      audioChunksRef.current = [];
+      
+      mediaRecorderRef.current.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
         }
       };
       
-      recognitionRef.current.onerror = (event: any) => {
-        notifyError('Speech recognition error', event.error);
-        if (event.error === 'not-allowed') {
-          setSpeechSupported(false);
-        }
-      };
-      
-      recognitionRef.current.onend = () => {
-        if (isRecordingRef.current && recognitionRef.current) {
-          try {
-            recognitionRef.current.start();
-          } catch (e) {
-            notifyError('Failed to restart recognition', e);
-          }
+      mediaRecorderRef.current.onstop = async () => {
+        if (audioChunksRef.current.length > 0) {
+          const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
+          audioChunksRef.current = [];
+          await sendAudioForTranscription(audioBlob);
         }
       };
       
       isRecordingRef.current = true;
       setIsRecording(true);
-      recognitionRef.current.start();
+      setProcessingStatus('recording');
+      setAudioChunksCount(0);
+      
+      mediaRecorderRef.current.start();
       requestAnimationFrame(updateMicLevel);
       
+      recordingIntervalRef.current = window.setInterval(() => {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+          mediaRecorderRef.current.stop();
+          mediaRecorderRef.current.start();
+        }
+      }, 10000);
+      
     } catch (error) {
-      notifyError('Failed to start recording', error);
+      notifyError('Failed to start recording. Please allow microphone access.', error);
       setSpeechSupported(false);
     }
   };
 
-  const stopRecording = () => {
+  const stopRecording = async () => {
     isRecordingRef.current = false;
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-      recognitionRef.current = null;
+    
+    if (recordingIntervalRef.current) {
+      clearInterval(recordingIntervalRef.current);
+      recordingIntervalRef.current = null;
     }
+    
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.stop();
+    }
+    
     if (micStreamRef.current) {
       micStreamRef.current.getTracks().forEach(track => track.stop());
       micStreamRef.current = null;
@@ -293,7 +310,9 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
     setIsRecording(false);
     setMicLevel(0);
     setCurrentTranscript('');
-    fetchSessionSummary();
+    setProcessingStatus('idle');
+    
+    setTimeout(() => fetchSessionSummary(), 2000);
   };
 
   const toggleRecording = () => {
@@ -306,8 +325,11 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
 
   useEffect(() => {
     return () => {
-      if (recognitionRef.current) {
-        recognitionRef.current.stop();
+      if (recordingIntervalRef.current) {
+        clearInterval(recordingIntervalRef.current);
+      }
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        mediaRecorderRef.current.stop();
       }
       if (micStreamRef.current) {
         micStreamRef.current.getTracks().forEach(track => track.stop());
@@ -826,15 +848,54 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
           </div>
         </div>
 
-        {/* Current Transcript Preview */}
-        {currentTranscript && (
+        {/* Audio Processing Status */}
+        {isRecording && (
           <div className="mx-4 mb-2 animate-in fade-in duration-200">
             <div className="bg-slate-800/60 rounded-lg border border-slate-700/50 p-3">
-              <div className="flex items-center gap-2 mb-1">
-                <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
-                <span className="text-xs font-bold text-red-400 uppercase tracking-wider">Listening...</span>
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  {processingStatus === 'recording' && (
+                    <>
+                      <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
+                      <span className="text-xs font-bold text-red-400 uppercase tracking-wider">Recording Audio</span>
+                    </>
+                  )}
+                  {processingStatus === 'uploading' && (
+                    <>
+                      <Loader2 className="w-3 h-3 text-blue-400 animate-spin" />
+                      <span className="text-xs font-bold text-blue-400 uppercase tracking-wider">Uploading Audio...</span>
+                    </>
+                  )}
+                  {processingStatus === 'transcribing' && (
+                    <>
+                      <Loader2 className="w-3 h-3 text-purple-400 animate-spin" />
+                      <span className="text-xs font-bold text-purple-400 uppercase tracking-wider">AI Transcribing...</span>
+                    </>
+                  )}
+                </div>
+                <span className="text-xs text-slate-500">Chunks: {audioChunksCount}</span>
               </div>
-              <p className="text-sm text-slate-300 italic">{currentTranscript}</p>
+              
+              <div className="flex items-center gap-2 mb-2">
+                <div className="flex-1 h-1 bg-slate-700 rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 transition-all duration-100"
+                    style={{ width: `${micLevel}%` }}
+                  />
+                </div>
+                <span className="text-[10px] text-slate-500 w-8">{Math.round(micLevel)}%</span>
+              </div>
+              
+              {lastTranscribed && (
+                <div className="bg-slate-900/50 rounded p-2 mt-2">
+                  <p className="text-[10px] text-slate-500 uppercase mb-1">Last Transcribed:</p>
+                  <p className="text-xs text-slate-300">{lastTranscribed.substring(0, 100)}{lastTranscribed.length > 100 ? '...' : ''}</p>
+                </div>
+              )}
+              
+              <p className="text-[10px] text-slate-500 mt-2">
+                Audio sent to OpenAI Whisper every 10 seconds for transcription
+              </p>
             </div>
           </div>
         )}
@@ -884,12 +945,12 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
           </div>
       )}
 
-      {/* Speech Not Supported Warning */}
+      {/* Microphone Not Supported Warning */}
       {!speechSupported && (
         <div className="mx-4 mb-2 bg-amber-500/20 border border-amber-500/50 rounded-lg p-3 flex items-center gap-3">
           <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />
           <p className="text-sm text-amber-200">
-            Speech recognition is not supported in this browser. Please use Chrome or Edge for live transcription.
+            Microphone access is required for transcription. Please allow microphone access in your browser settings.
           </p>
         </div>
       )}

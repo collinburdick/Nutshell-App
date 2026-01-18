@@ -11,6 +11,23 @@ import { eq, desc, and, sql, inArray } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import OpenAI from "openai";
 import QRCode from "qrcode";
+import multer from "multer";
+import fs from "fs";
+import path from "path";
+
+const upload = multer({ 
+  storage: multer.diskStorage({
+    destination: '/tmp/audio',
+    filename: (req, file, cb) => {
+      cb(null, `${Date.now()}-${Math.random().toString(36).substring(7)}.webm`);
+    }
+  }),
+  limits: { fileSize: 25 * 1024 * 1024 }
+});
+
+if (!fs.existsSync('/tmp/audio')) {
+  fs.mkdirSync('/tmp/audio', { recursive: true });
+}
 
 const app = express();
 app.use(cors());
@@ -812,6 +829,94 @@ Instructions:
     res.status(500).json({ error: "Failed to process query" });
   }
 });
+
+app.post("/api/ai/transcribe", upload.single('audio'), async (req, res) => {
+  if (!openai) {
+    return res.status(503).json({ error: "OpenAI not configured. Please add SlalomOpenAIAPIKey." });
+  }
+  
+  if (!req.file) {
+    return res.status(400).json({ error: "No audio file provided" });
+  }
+  
+  const tableId = parseInt(req.body.tableId);
+  if (Number.isNaN(tableId)) {
+    fs.unlinkSync(req.file.path);
+    return res.status(400).json({ error: "Invalid table ID" });
+  }
+  
+  try {
+    console.log("[Whisper] Processing audio file:", req.file.path, "size:", req.file.size);
+    
+    const transcription = await openai.audio.transcriptions.create({
+      file: fs.createReadStream(req.file.path),
+      model: "whisper-1",
+      language: "en",
+    });
+    
+    fs.unlinkSync(req.file.path);
+    
+    const text = transcription.text?.trim();
+    if (!text) {
+      return res.json({ success: true, text: "", saved: false, message: "No speech detected" });
+    }
+    
+    console.log("[Whisper] Transcribed:", text.substring(0, 100));
+    
+    const sentimentScore = await analyzeSentiment(text);
+    
+    const [saved] = await db.insert(transcripts).values({
+      tableId,
+      speaker: req.body.speaker || "Participant",
+      text,
+      sentiment: sentimentScore,
+      isQuote: false,
+    }).returning();
+    
+    await db.update(tables)
+      .set({ lastTranscript: new Date(), lastAudio: new Date() })
+      .where(eq(tables.id, tableId));
+    
+    broadcast("transcript_added", saved);
+    
+    res.json({ 
+      success: true, 
+      text, 
+      saved: true, 
+      transcript: saved,
+      message: "Audio transcribed and saved"
+    });
+  } catch (error: any) {
+    console.error("[Whisper] Transcription error:", error);
+    if (req.file?.path && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    res.status(500).json({ error: error.message || "Failed to transcribe audio" });
+  }
+});
+
+async function analyzeSentiment(text: string): Promise<number> {
+  if (!openai) return 0;
+  
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { 
+          role: "system", 
+          content: "Rate the sentiment of this text from -1 (very negative) to 1 (very positive). Respond with only a number."
+        },
+        { role: "user", content: text }
+      ],
+      max_tokens: 10,
+    });
+    
+    const score = parseFloat(response.choices[0]?.message?.content || "0");
+    return isNaN(score) ? 0 : Math.max(-1, Math.min(1, score));
+  } catch {
+    return 0;
+  }
+}
 
 app.post("/api/ai/coach-tip", async (req, res) => {
   if (!openai) {

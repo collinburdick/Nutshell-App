@@ -13,6 +13,7 @@
   "dependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
+    "@types/multer": "^2.0.0",
     "@types/pg": "^8.16.0",
     "@types/qrcode": "^1.5.6",
     "@types/uuid": "^10.0.0",
@@ -24,13 +25,14 @@
     "drizzle-zod": "^0.8.3",
     "express": "^5.2.1",
     "lucide-react": "^0.562.0",
+    "multer": "^2.0.2",
     "openai": "^6.16.0",
     "pg": "^8.17.1",
     "qrcode": "^1.5.4",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
-    "recharts": "^3.6.0",
     "react-markdown": "^10.1.0",
+    "recharts": "^3.6.0",
     "tsx": "^4.21.0",
     "uuid": "^13.0.0",
     "ws": "^8.19.0"
