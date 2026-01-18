@@ -238,6 +238,14 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ tableId, agenda }),
       }),
+    getSessionSummary: (tableId: number) =>
+      fetchApi<{ 
+        summary: string; 
+        actionItems: string[]; 
+        openQuestions: string[]; 
+        themes: string[];
+        transcriptCount: number;
+      }>(`/tables/${tableId}/session-summary`),
   },
   
   sentiment: {

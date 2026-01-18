@@ -1,22 +1,36 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Table, TableStatus, Insight, InsightType, AgendaItem } from '../types';
-import { Mic, Pause, Play, Star, Clock, ChevronDown, ChevronUp, LogOut, Megaphone, X, CheckCircle, Trash2, ArrowRight, Save, ShieldCheck, Sparkles, Smartphone, LogIn } from 'lucide-react';
+import { Mic, MicOff, Pause, Play, Star, Clock, ChevronDown, ChevronUp, LogOut, Megaphone, X, CheckCircle, Trash2, ArrowRight, Save, ShieldCheck, Sparkles, Smartphone, LogIn, AlertCircle, MessageSquare, Lightbulb, RefreshCw, Loader2 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { api, wsClient } from '../services/api';
 import { convertApiInsightToFrontend, convertApiTranscriptToFrontend, getDbIdFromTable } from '../services/typeConverters';
 import type { ApiInsight, ApiTranscript } from '../services/api';
 
+declare global {
+  interface Window {
+    webkitSpeechRecognition: any;
+    SpeechRecognition: any;
+  }
+}
+
+interface SessionSummary {
+  summary: string;
+  actionItems: string[];
+  openQuestions: string[];
+  themes: string[];
+  transcriptCount: number;
+}
+
 interface FacilitatorScreenProps {
   table: Table;
   onExit: () => void;
   notices: string[];
-  // Pass the default agenda as fallback if table has no custom one
   defaultAgenda: AgendaItem[];
 }
 
 export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onExit, notices, defaultAgenda }) => {
-  const [isRecording, setIsRecording] = useState(true);
+  const [isRecording, setIsRecording] = useState(false);
   const [micLevel, setMicLevel] = useState(0);
   const [elapsedTime, setElapsedTime] = useState(0);
   const [expandedPromptId, setExpandedPromptId] = useState<string | null>('p2');
@@ -24,23 +38,35 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
   const [showNuggetToast, setShowNuggetToast] = useState(false);
   const [voiceCommandActive, setVoiceCommandActive] = useState(false);
   
-  // Use custom table agenda or fall back to event default
   const activeAgenda = table.customAgenda && table.customAgenda.length > 0 ? table.customAgenda : defaultAgenda;
 
-  // Coach State
   const [showCoachTip, setShowCoachTip] = useState(false);
   const [coachTipText, setCoachTipText] = useState("Tip: We haven't heard much about *budget implications* yet. Consider asking about costs.");
 
-  // Wrap-Up Review State
   const [isReviewMode, setIsReviewMode] = useState(false);
   const [actionItems, setActionItems] = useState<Insight[]>([]);
   const [reviewedItems, setReviewedItems] = useState<Set<string>>(new Set());
   
-  // Notice State
   const [activeNotice, setActiveNotice] = useState<string | null>(null);
-
-  // Handoff State
   const [showHandoffCode, setShowHandoffCode] = useState(false);
+
+  const [sessionSummary, setSessionSummary] = useState<SessionSummary>({
+    summary: "Start recording to capture the discussion...",
+    actionItems: [],
+    openQuestions: [],
+    themes: [],
+    transcriptCount: 0
+  });
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [currentTranscript, setCurrentTranscript] = useState<string>("");
+  const [speechSupported, setSpeechSupported] = useState(true);
+  const [transcriptsSent, setTranscriptsSent] = useState(0);
+  
+  const recognitionRef = useRef<any>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const isRecordingRef = useRef(false);
 
   const fetchActionItems = useCallback(async () => {
     const eventDbId = parseInt(table.eventId);
@@ -94,23 +120,183 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
     return () => clearTimeout(timer);
   }, [fetchCoachTip]);
 
-  // Simulate Mic Level
   useEffect(() => {
-    if (!isRecording) {
-      setMicLevel(0);
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setSpeechSupported(false);
       return;
     }
-    const interval = setInterval(() => {
-      setMicLevel(Math.random() * 100);
-    }, 150);
-    return () => clearInterval(interval);
-  }, [isRecording]);
-
-  // Session Timer
-  useEffect(() => {
-    const interval = setInterval(() => setElapsedTime(p => p + 1), 1000);
-    return () => clearInterval(interval);
   }, []);
+
+  const fetchSessionSummary = useCallback(async () => {
+    const tableDbId = getDbIdFromTable(table);
+    if (!tableDbId) return;
+    
+    setSummaryLoading(true);
+    try {
+      const summary = await api.ai.getSessionSummary(tableDbId);
+      setSessionSummary(summary);
+    } catch (error) {
+      console.error('Failed to fetch session summary:', error);
+    }
+    setSummaryLoading(false);
+  }, [table]);
+
+  useEffect(() => {
+    fetchSessionSummary();
+  }, [fetchSessionSummary]);
+
+  useEffect(() => {
+    if (transcriptsSent > 0 && transcriptsSent % 3 === 0) {
+      fetchSessionSummary();
+    }
+  }, [transcriptsSent, fetchSessionSummary]);
+
+  const startRecording = async () => {
+    const tableDbId = getDbIdFromTable(table);
+    if (!tableDbId) return;
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setSpeechSupported(false);
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStreamRef.current = stream;
+      
+      audioContextRef.current = new AudioContext();
+      analyserRef.current = audioContextRef.current.createAnalyser();
+      const source = audioContextRef.current.createMediaStreamSource(stream);
+      source.connect(analyserRef.current);
+      analyserRef.current.fftSize = 256;
+      
+      const updateMicLevel = () => {
+        if (analyserRef.current && isRecordingRef.current) {
+          const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
+          analyserRef.current.getByteFrequencyData(dataArray);
+          const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+          setMicLevel((average / 255) * 100);
+          requestAnimationFrame(updateMicLevel);
+        }
+      };
+      
+      recognitionRef.current = new SpeechRecognition();
+      recognitionRef.current.continuous = true;
+      recognitionRef.current.interimResults = true;
+      recognitionRef.current.lang = 'en-US';
+      
+      recognitionRef.current.onresult = async (event: any) => {
+        let interimTranscript = '';
+        let finalTranscript = '';
+        
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalTranscript += transcript;
+          } else {
+            interimTranscript += transcript;
+          }
+        }
+        
+        setCurrentTranscript(interimTranscript);
+        
+        if (finalTranscript.trim()) {
+          setCurrentTranscript('');
+          try {
+            await api.transcripts.create(tableDbId, {
+              speaker: 'Participant',
+              text: finalTranscript.trim(),
+              isQuote: false
+            });
+            setTranscriptsSent(prev => prev + 1);
+            setLocalSummary(prev => [
+              `Captured: ${finalTranscript.trim().substring(0, 50)}...`,
+              ...prev
+            ].slice(0, 3));
+          } catch (error) {
+            console.error('Failed to save transcript:', error);
+          }
+        }
+      };
+      
+      recognitionRef.current.onerror = (event: any) => {
+        console.error('Speech recognition error:', event.error);
+        if (event.error === 'not-allowed') {
+          setSpeechSupported(false);
+        }
+      };
+      
+      recognitionRef.current.onend = () => {
+        if (isRecordingRef.current && recognitionRef.current) {
+          try {
+            recognitionRef.current.start();
+          } catch (e) {
+            console.error('Failed to restart recognition:', e);
+          }
+        }
+      };
+      
+      isRecordingRef.current = true;
+      setIsRecording(true);
+      recognitionRef.current.start();
+      requestAnimationFrame(updateMicLevel);
+      
+    } catch (error) {
+      console.error('Failed to start recording:', error);
+      setSpeechSupported(false);
+    }
+  };
+
+  const stopRecording = () => {
+    isRecordingRef.current = false;
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+    }
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach(track => track.stop());
+      micStreamRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+    setIsRecording(false);
+    setMicLevel(0);
+    setCurrentTranscript('');
+    fetchSessionSummary();
+  };
+
+  const toggleRecording = () => {
+    if (isRecording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach(track => track.stop());
+      }
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isRecording) {
+      const interval = setInterval(() => setElapsedTime(p => p + 1), 1000);
+      return () => clearInterval(interval);
+    }
+  }, [isRecording]);
 
   const fetchRecentSummary = useCallback(async () => {
     const tableDbId = getDbIdFromTable(table);
@@ -134,8 +320,6 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
 
   useEffect(() => {
     fetchRecentSummary();
-    const interval = setInterval(fetchRecentSummary, 15000);
-    return () => clearInterval(interval);
   }, [fetchRecentSummary]);
 
   useEffect(() => {
@@ -441,33 +625,134 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
             </div>
         )}
 
+        {/* Live Session Summary Panel */}
+        <div className="px-4 pb-4">
+          <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+            <div className="px-4 py-3 bg-slate-800 border-b border-slate-700 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className={clsx("w-2 h-2 rounded-full", isRecording ? "bg-emerald-400 animate-pulse" : "bg-slate-500")}></div>
+                <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">Live Session Summary</span>
+              </div>
+              <button 
+                onClick={fetchSessionSummary}
+                disabled={summaryLoading}
+                className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-700 rounded transition-colors disabled:opacity-50"
+                title="Refresh Summary"
+              >
+                <RefreshCw className={clsx("w-4 h-4", summaryLoading && "animate-spin")} />
+              </button>
+            </div>
+            
+            <div className="p-4 space-y-4">
+              <div>
+                <p className="text-sm text-slate-300 leading-relaxed">
+                  {summaryLoading ? (
+                    <span className="flex items-center gap-2 text-slate-500">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Analyzing discussion...
+                    </span>
+                  ) : sessionSummary.summary}
+                </p>
+                <p className="text-xs text-slate-500 mt-2">
+                  {sessionSummary.transcriptCount} transcript segments captured
+                </p>
+              </div>
+
+              {sessionSummary.themes.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <Lightbulb className="w-4 h-4 text-amber-400" />
+                    <span className="text-xs font-bold text-amber-400 uppercase tracking-wider">Emerging Themes</span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {sessionSummary.themes.map((theme, i) => (
+                      <span key={i} className="px-2 py-1 bg-amber-500/20 text-amber-300 text-xs rounded-full border border-amber-500/30">
+                        {theme}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {sessionSummary.actionItems.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <CheckCircle className="w-4 h-4 text-emerald-400" />
+                    <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Action Items</span>
+                  </div>
+                  <ul className="space-y-1">
+                    {sessionSummary.actionItems.map((item, i) => (
+                      <li key={i} className="text-sm text-slate-300 flex items-start gap-2">
+                        <span className="text-emerald-500 mt-1">•</span>
+                        {item}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {sessionSummary.openQuestions.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <MessageSquare className="w-4 h-4 text-blue-400" />
+                    <span className="text-xs font-bold text-blue-400 uppercase tracking-wider">Open Questions</span>
+                  </div>
+                  <ul className="space-y-1">
+                    {sessionSummary.openQuestions.map((q, i) => (
+                      <li key={i} className="text-sm text-slate-300 flex items-start gap-2">
+                        <span className="text-blue-500 mt-1">?</span>
+                        {q}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Current Transcript Preview */}
+        {currentTranscript && (
+          <div className="mx-4 mb-2 animate-in fade-in duration-200">
+            <div className="bg-slate-800/60 rounded-lg border border-slate-700/50 p-3">
+              <div className="flex items-center gap-2 mb-1">
+                <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
+                <span className="text-xs font-bold text-red-400 uppercase tracking-wider">Listening...</span>
+              </div>
+              <p className="text-sm text-slate-300 italic">{currentTranscript}</p>
+            </div>
+          </div>
+        )}
+
         {/* Privacy Reassurance Card */}
         <div className="px-4 pb-4">
              <div className="bg-slate-800/60 rounded-lg border border-slate-700/50 p-3 flex items-center gap-3">
                  <ShieldCheck className="w-5 h-5 text-emerald-400" />
                  <div>
                      <p className="text-xs font-bold text-slate-300 uppercase tracking-wide">Privacy Active</p>
-                     <p className="text-[10px] text-slate-500">Audio is processed in real-time and not stored. PII redacted.</p>
+                     <p className="text-[10px] text-slate-500">Audio is transcribed in real-time. PII redacted.</p>
                  </div>
              </div>
         </div>
 
         <div className="flex-1"></div>
 
-        {/* Local Summary Stream */}
-        <div className="bg-slate-800/50 p-4 border-t border-slate-700">
-             <div className="flex items-center gap-2 mb-2">
-                 <div className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"></div>
-                 <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Local Summary Stream</span>
-             </div>
-             <div className="space-y-2">
-                 {localSummary.map((msg, i) => (
-                     <div key={i} className={clsx("text-sm transition-opacity duration-500", i === 0 ? "text-white font-medium" : "text-slate-500")}>
-                         {msg}
-                     </div>
-                 ))}
-             </div>
-        </div>
+        {/* Recent Activity Stream */}
+        {localSummary.length > 0 && (
+          <div className="bg-slate-800/50 p-4 border-t border-slate-700">
+               <div className="flex items-center gap-2 mb-2">
+                   <div className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"></div>
+                   <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Recent Activity</span>
+               </div>
+               <div className="space-y-2">
+                   {localSummary.map((msg, i) => (
+                       <div key={i} className={clsx("text-sm transition-opacity duration-500", i === 0 ? "text-white font-medium" : "text-slate-500")}>
+                           {msg}
+                       </div>
+                   ))}
+               </div>
+          </div>
+        )}
 
       </div>
 
@@ -484,35 +769,53 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
           </div>
       )}
 
-      {/* Controls Footer */}
-      <div className="p-4 bg-slate-900 border-t border-slate-800 grid grid-cols-2 gap-4 shrink-0 pb-8 relative">
-          
-          {/* Voice Button Floating above controls */}
-          <button 
-             onClick={handleVoiceCommandTrigger}
-             className="absolute -top-6 left-1/2 -translate-x-1/2 w-12 h-12 bg-indigo-600 text-white rounded-full flex items-center justify-center shadow-lg border-2 border-slate-800 hover:scale-110 transition-transform z-10"
-             title="Voice Command"
-          >
-              <Mic className="w-5 h-5" />
-          </button>
+      {/* Speech Not Supported Warning */}
+      {!speechSupported && (
+        <div className="mx-4 mb-2 bg-amber-500/20 border border-amber-500/50 rounded-lg p-3 flex items-center gap-3">
+          <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />
+          <p className="text-sm text-amber-200">
+            Speech recognition is not supported in this browser. Please use Chrome or Edge for live transcription.
+          </p>
+        </div>
+      )}
 
+      {/* Controls Footer */}
+      <div className="p-4 bg-slate-900 border-t border-slate-800 shrink-0 pb-8">
+          
+          {/* Main Recording Button */}
           <button 
-            onClick={() => setIsRecording(!isRecording)}
+            onClick={toggleRecording}
+            disabled={!speechSupported}
             className={clsx(
-                "flex items-center justify-center gap-2 h-14 rounded-xl font-bold text-lg transition-colors",
-                isRecording ? "bg-slate-800 text-slate-200 border border-slate-600" : "bg-red-600 text-white"
+                "w-full flex items-center justify-center gap-3 h-16 rounded-xl font-bold text-lg transition-all mb-3 disabled:opacity-50 disabled:cursor-not-allowed",
+                isRecording 
+                  ? "bg-red-600 text-white shadow-lg shadow-red-900/50 animate-pulse" 
+                  : "bg-emerald-600 text-white hover:bg-emerald-700"
             )}
           >
-             {isRecording ? <><Pause className="w-5 h-5" /> Pause</> : <><Play className="w-5 h-5" /> Resume</>}
+             {isRecording ? (
+               <><MicOff className="w-6 h-6" /> Stop Recording</>
+             ) : (
+               <><Mic className="w-6 h-6" /> Start Recording</>
+             )}
           </button>
-          
-          <button 
-            onClick={handleGoldenNugget}
-            className="flex items-center justify-center gap-2 h-14 bg-amber-500 text-slate-900 rounded-xl font-bold text-lg shadow-lg shadow-amber-900/20 active:scale-95 transition-transform"
-          >
-             <Star className="w-5 h-5 fill-slate-900" />
-             Golden Nugget
-          </button>
+
+          <div className="grid grid-cols-2 gap-3">
+            <button 
+               onClick={handleVoiceCommandTrigger}
+               className="flex items-center justify-center gap-2 h-12 bg-indigo-600 text-white rounded-xl font-bold transition-colors hover:bg-indigo-700"
+            >
+                <Sparkles className="w-5 h-5" /> Voice Command
+            </button>
+            
+            <button 
+              onClick={handleGoldenNugget}
+              className="flex items-center justify-center gap-2 h-12 bg-amber-500 text-slate-900 rounded-xl font-bold shadow-lg shadow-amber-900/20 active:scale-95 transition-transform"
+            >
+               <Star className="w-5 h-5 fill-slate-900" />
+               Golden Nugget
+            </button>
+          </div>
       </div>
 
       {/* Toast Notification */}

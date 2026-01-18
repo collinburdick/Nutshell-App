@@ -728,6 +728,94 @@ app.post("/api/ai/coach-tip", async (req, res) => {
   }
 });
 
+app.get("/api/tables/:tableId/session-summary", async (req, res) => {
+  if (!openai) {
+    return res.status(503).json({ error: "OpenAI not configured" });
+  }
+  
+  try {
+    const tableId = parseInt(req.params.tableId);
+    
+    const allTranscripts = await db.select()
+      .from(transcripts)
+      .where(eq(transcripts.tableId, tableId))
+      .orderBy(desc(transcripts.timestamp));
+    
+    const tableInsights = await db.select()
+      .from(insights)
+      .where(sql`${insights.relatedTableIds} @> ${JSON.stringify([tableId])}::jsonb`)
+      .orderBy(desc(insights.createdAt));
+    
+    if (allTranscripts.length === 0) {
+      return res.json({
+        summary: "No discussion has been captured yet. Start speaking to see the live summary.",
+        actionItems: [],
+        openQuestions: [],
+        themes: [],
+        transcriptCount: 0
+      });
+    }
+    
+    const transcriptText = allTranscripts
+      .reverse()
+      .map(t => `${t.speaker || 'Participant'}: ${t.text}`)
+      .join("\n");
+    
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { 
+          role: "system", 
+          content: `You are a live meeting summarizer for Nutshell. Analyze the discussion and provide a JSON response with:
+1. "summary": A 2-3 sentence overview of what has been discussed so far
+2. "actionItems": Array of action items mentioned (strings), max 5
+3. "openQuestions": Array of open questions that came up (strings), max 5  
+4. "themes": Array of key themes/topics emerging (strings), max 3
+
+Respond ONLY with valid JSON, no markdown or extra text.`
+        },
+        { role: "user", content: `Discussion so far:\n${transcriptText}` }
+      ],
+      max_tokens: 500,
+    });
+    
+    let parsed = {
+      summary: "Discussion in progress...",
+      actionItems: [] as string[],
+      openQuestions: [] as string[],
+      themes: [] as string[]
+    };
+    
+    try {
+      const content = response.choices[0]?.message?.content || "{}";
+      parsed = JSON.parse(content);
+    } catch (e) {
+      parsed.summary = response.choices[0]?.message?.content || "Discussion in progress...";
+    }
+    
+    const existingActions = tableInsights
+      .filter(i => i.type === 'ACTION_ITEM')
+      .map(i => i.title);
+    const existingQuestions = tableInsights
+      .filter(i => i.type === 'QUESTION')
+      .map(i => i.title);
+    const existingThemes = tableInsights
+      .filter(i => i.type === 'THEME')
+      .map(i => i.title);
+    
+    res.json({
+      summary: parsed.summary,
+      actionItems: [...new Set([...existingActions, ...(parsed.actionItems || [])])].slice(0, 5),
+      openQuestions: [...new Set([...existingQuestions, ...(parsed.openQuestions || [])])].slice(0, 5),
+      themes: [...new Set([...existingThemes, ...(parsed.themes || [])])].slice(0, 3),
+      transcriptCount: allTranscripts.length
+    });
+  } catch (error) {
+    console.error("Session summary error:", error);
+    res.status(500).json({ error: "Failed to generate session summary" });
+  }
+});
+
 app.get("/api/events/:eventId/sentiment-data", async (req, res) => {
   try {
     const eventId = parseInt(req.params.eventId);
