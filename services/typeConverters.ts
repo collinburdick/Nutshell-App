@@ -124,3 +124,50 @@ export function convertApiAgendaItemToFrontend(apiItem: ApiAgendaItem): AgendaIt
 export function getDbIdFromTable(table: Table): number | undefined {
   return (table as any)._dbId;
 }
+
+export function createTableIdMapper(tables: Table[]): (dbId: number | string) => string {
+  const dbIdToJoinCode = new Map<number, string>();
+  tables.forEach(table => {
+    const dbId = getDbIdFromTable(table);
+    if (dbId !== undefined) {
+      dbIdToJoinCode.set(dbId, table.id);
+    }
+  });
+  
+  return (dbId: number | string): string => {
+    const numericId = typeof dbId === 'string' ? parseInt(dbId) : dbId;
+    return dbIdToJoinCode.get(numericId) || String(dbId);
+  };
+}
+
+export function convertApiTranscriptToFrontendWithMapper(
+  apiTranscript: ApiTranscript, 
+  tableIdMapper: (dbId: number | string) => string
+): TranscriptSegment {
+  return {
+    id: String(apiTranscript.id),
+    tableId: tableIdMapper(apiTranscript.tableId),
+    timestamp: new Date(apiTranscript.timestamp).getTime(),
+    speaker: apiTranscript.speaker || 'Unknown',
+    text: apiTranscript.text,
+    sentiment: apiTranscript.sentiment || 0,
+    isQuote: apiTranscript.isQuote || false,
+  };
+}
+
+export function convertApiInsightToFrontendWithMapper(
+  apiInsight: ApiInsight,
+  tableIdMapper: (dbId: number | string) => string
+): Insight {
+  return {
+    id: String(apiInsight.id),
+    type: apiInsight.type as InsightType,
+    title: apiInsight.title,
+    description: apiInsight.description || '',
+    confidence: apiInsight.confidence || 0.8,
+    relatedTableIds: (apiInsight.relatedTableIds || []).map(id => tableIdMapper(id)),
+    evidenceCount: apiInsight.evidenceCount || 0,
+    timestamp: new Date(apiInsight.createdAt).getTime(),
+    status: apiInsight.status || undefined,
+  };
+}

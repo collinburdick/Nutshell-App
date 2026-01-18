@@ -1,7 +1,8 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Event, Table, Insight, InsightType } from '../types';
-import { MOCK_INSIGHTS } from '../constants';
+import { api, wsClient } from '../services/api';
+import { convertApiInsightToFrontendWithMapper, createTableIdMapper } from '../services/typeConverters';
 import { Flame, Star, MessageSquare, TrendingUp, Users, Mic, Quote, ArrowUpRight, Zap, HelpCircle } from 'lucide-react';
 import { clsx } from 'clsx';
 
@@ -12,17 +13,48 @@ interface LiveRecapProps {
 
 export const LiveRecap: React.FC<LiveRecapProps> = ({ event, tables }) => {
   const [activeTab, setActiveTab] = useState<'HIGHLIGHTS' | 'THEMES' | 'QUESTIONS'>('HIGHLIGHTS');
+  const [allInsights, setAllInsights] = useState<Insight[]>([]);
 
-  // Derived Metrics
+  const tableIdMapper = useCallback(() => createTableIdMapper(tables), [tables]);
+
+  const fetchInsights = useCallback(async () => {
+    const eventDbId = parseInt(event.id);
+    if (isNaN(eventDbId)) return;
+    
+    try {
+      const apiInsights = await api.insights.list(eventDbId);
+      const mapper = tableIdMapper();
+      setAllInsights(apiInsights.map(i => convertApiInsightToFrontendWithMapper(i, mapper)));
+    } catch (error) {
+      console.error('Failed to fetch insights:', error);
+    }
+  }, [event.id, tableIdMapper]);
+
+  useEffect(() => {
+    fetchInsights();
+  }, [fetchInsights]);
+
+  useEffect(() => {
+    wsClient.connect();
+    const mapper = tableIdMapper();
+    const unsubInsight = wsClient.subscribe('insight', (data) => {
+      const insight = convertApiInsightToFrontendWithMapper(data, mapper);
+      setAllInsights(prev => [insight, ...prev.filter(i => i.id !== insight.id)]);
+    });
+    
+    return () => {
+      unsubInsight();
+    };
+  }, [tableIdMapper]);
+
   const activeTablesCount = tables.filter(t => t.status === 'ACTIVE').length;
   const hotTables = tables.filter(t => t.isHot);
-  const totalInsights = MOCK_INSIGHTS.length * 12; // Mock multiplier for "total captured" feel
+  const totalInsights = allInsights.length;
   
-  // Data Filtering
-  const themes = MOCK_INSIGHTS.filter(i => i.type === InsightType.THEME).slice(0, 3);
-  const nuggets = MOCK_INSIGHTS.filter(i => i.type === InsightType.GOLDEN_NUGGET);
-  const questions = MOCK_INSIGHTS.filter(i => i.type === InsightType.QUESTION);
-  const controversy = MOCK_INSIGHTS.filter(i => i.type === InsightType.SENTIMENT_SPIKE);
+  const themes = allInsights.filter(i => i.type === InsightType.THEME).slice(0, 3);
+  const nuggets = allInsights.filter(i => i.type === InsightType.GOLDEN_NUGGET);
+  const questions = allInsights.filter(i => i.type === InsightType.QUESTION);
+  const controversy = allInsights.filter(i => i.type === InsightType.SENTIMENT_SPIKE);
 
   // Auto-rotate spotlight nugget every 10s
   const [spotlightIndex, setSpotlightIndex] = useState(0);

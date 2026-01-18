@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { TranscriptSegment } from '../types';
 import { Quote, Search, Clock, Bookmark, BookmarkPlus, Trash2, BatteryCharging } from 'lucide-react';
 import { clsx } from 'clsx';
@@ -6,11 +6,37 @@ import { clsx } from 'clsx';
 interface EvidencePanelProps {
   transcripts: TranscriptSegment[];
   isLoading?: boolean;
+  sessionStartTime?: number;
+  expectedDurationMinutes?: number;
 }
 
-export const EvidencePanel: React.FC<EvidencePanelProps> = ({ transcripts, isLoading }) => {
+export const EvidencePanel: React.FC<EvidencePanelProps> = ({ 
+  transcripts, 
+  isLoading,
+  sessionStartTime,
+  expectedDurationMinutes = 60
+}) => {
   const [view, setView] = useState<'STREAM' | 'QUOTES'>('STREAM');
   const [savedQuotes, setSavedQuotes] = useState<TranscriptSegment[]>([]);
+  const [filterText, setFilterText] = useState('');
+
+  const filteredTranscripts = useMemo(() => {
+    if (!filterText.trim()) return transcripts;
+    return transcripts.filter(t => 
+      t.text.toLowerCase().includes(filterText.toLowerCase()) ||
+      t.speaker.toLowerCase().includes(filterText.toLowerCase())
+    );
+  }, [transcripts, filterText]);
+
+  const dataCaptureStats = useMemo(() => {
+    if (!sessionStartTime) {
+      return { elapsedMinutes: 0, expectedMinutes: expectedDurationMinutes, percentage: 0 };
+    }
+    const elapsedMs = Date.now() - sessionStartTime;
+    const elapsedMinutes = Math.min(Math.floor(elapsedMs / 60000), expectedDurationMinutes);
+    const percentage = Math.min(100, Math.round((elapsedMinutes / expectedDurationMinutes) * 100));
+    return { elapsedMinutes, expectedMinutes: expectedDurationMinutes, percentage };
+  }, [sessionStartTime, expectedDurationMinutes]);
 
   const handleSaveQuote = (segment: TranscriptSegment) => {
       if (!savedQuotes.find(q => q.id === segment.id)) {
@@ -24,16 +50,20 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({ transcripts, isLoa
 
   return (
     <div className="flex flex-col h-full bg-white border-l border-slate-200 w-[400px] shrink-0 transition-all">
-      {/* Completeness Meter (New) */}
       <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
           <div className="flex items-center gap-2">
               <BatteryCharging className="w-4 h-4 text-emerald-500" />
               <span className="text-xs font-bold uppercase tracking-wider text-slate-500">Data Capture</span>
           </div>
           <div className="text-right">
-              <div className="text-xs font-bold text-slate-800">45m / 60m</div>
+              <div className="text-xs font-bold text-slate-800">
+                {dataCaptureStats.elapsedMinutes}m / {dataCaptureStats.expectedMinutes}m
+              </div>
               <div className="w-24 h-1.5 bg-slate-200 rounded-full mt-1 overflow-hidden">
-                  <div className="h-full bg-emerald-500 w-[75%] rounded-full"></div>
+                  <div 
+                    className="h-full bg-emerald-500 rounded-full transition-all"
+                    style={{ width: `${dataCaptureStats.percentage}%` }}
+                  ></div>
               </div>
           </div>
       </div>
@@ -62,25 +92,26 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({ transcripts, isLoa
 
       {view === 'STREAM' && (
         <>
-            {/* Search Filter (Visual Only) */}
             <div className="p-3 border-b border-slate-100 bg-slate-50/50">
                 <div className="relative">
                     <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
                     <input 
                         type="text" 
                         placeholder="Filter transcripts..." 
+                        value={filterText}
+                        onChange={(e) => setFilterText(e.target.value)}
                         className="w-full pl-9 pr-4 py-2 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     />
                 </div>
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                {transcripts.length === 0 ? (
+                {filteredTranscripts.length === 0 ? (
                 <div className="text-center py-10 text-slate-400">
                     <p>No transcripts available for this selection.</p>
                 </div>
                 ) : (
-                    transcripts.map((segment) => (
+                    filteredTranscripts.map((segment) => (
                     <div key={segment.id} className="group relative pl-4 border-l-2 border-slate-200 hover:border-indigo-400 transition-colors">
                         <div className="flex justify-between items-center mb-1">
                             <span className="text-xs font-bold text-slate-700">{segment.speaker}</span>

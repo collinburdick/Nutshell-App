@@ -1,9 +1,11 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Table, TableStatus, Insight, InsightType, AgendaItem } from '../types';
 import { Mic, Pause, Play, Star, Clock, ChevronDown, ChevronUp, LogOut, Megaphone, X, CheckCircle, Trash2, ArrowRight, Save, ShieldCheck, Sparkles, Smartphone, LogIn } from 'lucide-react';
 import { clsx } from 'clsx';
-import { MOCK_INSIGHTS } from '../constants';
+import { api, wsClient } from '../services/api';
+import { convertApiInsightToFrontend, convertApiTranscriptToFrontend, getDbIdFromTable } from '../services/typeConverters';
+import type { ApiInsight, ApiTranscript } from '../services/api';
 
 interface FacilitatorScreenProps {
   table: Table;
@@ -40,28 +42,28 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
   // Handoff State
   const [showHandoffCode, setShowHandoffCode] = useState(false);
 
-  // Initialize mock action items for review
+  const fetchActionItems = useCallback(async () => {
+    const eventDbId = parseInt(table.eventId);
+    const tableDbId = getDbIdFromTable(table);
+    if (isNaN(eventDbId) || !tableDbId) return;
+    
+    try {
+      const apiInsights = await api.insights.list(eventDbId);
+      const items = apiInsights
+        .filter((i: ApiInsight) => 
+          (i.type === 'ACTION_ITEM' || i.type === 'QUESTION') && 
+          i.relatedTableIds.includes(tableDbId)
+        )
+        .map(convertApiInsightToFrontend);
+      setActionItems(items);
+    } catch (error) {
+      console.error('Failed to fetch action items:', error);
+    }
+  }, [table]);
+
   useEffect(() => {
-     // Filter mock insights for this table that are action items or questions
-     const items = MOCK_INSIGHTS.filter(i => 
-         (i.type === InsightType.ACTION_ITEM || i.type === InsightType.QUESTION) && 
-         i.relatedTableIds.includes(table.id)
-     );
-     // Add a dummy one if none exist for demo
-     if(items.length === 0) {
-         items.push({
-             id: 'temp_ai_1',
-             type: InsightType.ACTION_ITEM,
-             title: 'Schedule follow-up on API limits',
-             description: 'Team needs to clarify rate limits before Q4.',
-             confidence: 0.9,
-             relatedTableIds: [table.id],
-             evidenceCount: 1,
-             timestamp: Date.now()
-         });
-     }
-     setActionItems(items);
-  }, [table.id]);
+    fetchActionItems();
+  }, [fetchActionItems]);
 
   // Effect to show new notices when they arrive
   useEffect(() => {
@@ -70,13 +72,27 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
     }
   }, [notices]);
 
-  // Simulate Coach Tip Appearance
+  const fetchCoachTip = useCallback(async () => {
+    const tableDbId = getDbIdFromTable(table);
+    if (!tableDbId) return;
+    
+    try {
+      const result = await api.ai.getCoachTip(tableDbId, activeAgenda);
+      if (result.tip) {
+        setCoachTipText(result.tip);
+        setShowCoachTip(true);
+      }
+    } catch (error) {
+      console.error('Failed to get coach tip:', error);
+    }
+  }, [table, activeAgenda]);
+
   useEffect(() => {
     const timer = setTimeout(() => {
-        setShowCoachTip(true);
-    }, 8000); // Show tip after 8 seconds for demo
+      fetchCoachTip();
+    }, 10000);
     return () => clearTimeout(timer);
-  }, []);
+  }, [fetchCoachTip]);
 
   // Simulate Mic Level
   useEffect(() => {
@@ -96,21 +112,59 @@ export const FacilitatorScreen: React.FC<FacilitatorScreenProps> = ({ table, onE
     return () => clearInterval(interval);
   }, []);
 
-  // Simulate Local Summary Stream
+  const fetchRecentSummary = useCallback(async () => {
+    const tableDbId = getDbIdFromTable(table);
+    if (!tableDbId) return;
+    
+    try {
+      const transcripts = await api.transcripts.listByTable(tableDbId);
+      if (transcripts.length > 0) {
+        const recentTranscripts = transcripts.slice(0, 3);
+        const summaries = recentTranscripts.map(t => {
+          const prefix = t.sentiment && t.sentiment > 0.3 ? 'Positive: ' : 
+                        t.sentiment && t.sentiment < -0.3 ? 'Concern: ' : 'Noted: ';
+          return `${prefix}${t.text.substring(0, 60)}${t.text.length > 60 ? '...' : ''}`;
+        });
+        setLocalSummary(summaries);
+      }
+    } catch (error) {
+      console.error('Failed to fetch recent summary:', error);
+    }
+  }, [table]);
+
   useEffect(() => {
-    const messages = [
-      "Noted: Concern about wiki fragmentation.",
-      "Captured: Idea for automated provisioning.",
-      "Key point: Support SLA is vital for enterprise.",
-      "Trend: Buddy system is working well."
-    ];
-    let i = 0;
-    const interval = setInterval(() => {
-      setLocalSummary(prev => [messages[i % messages.length], ...prev].slice(0, 3));
-      i++;
-    }, 15000);
+    fetchRecentSummary();
+    const interval = setInterval(fetchRecentSummary, 15000);
     return () => clearInterval(interval);
-  }, []);
+  }, [fetchRecentSummary]);
+
+  useEffect(() => {
+    wsClient.connect();
+    const tableDbId = getDbIdFromTable(table);
+    
+    const unsubTranscript = wsClient.subscribe('transcript', (data: ApiTranscript) => {
+      if (tableDbId && data.tableId === tableDbId) {
+        const sentiment = data.sentiment || 0;
+        const prefix = sentiment > 0.3 ? 'Positive: ' : 
+                      sentiment < -0.3 ? 'Concern: ' : 'Noted: ';
+        const summary = `${prefix}${data.text.substring(0, 60)}${data.text.length > 60 ? '...' : ''}`;
+        setLocalSummary(prev => [summary, ...prev].slice(0, 3));
+      }
+    });
+    
+    const unsubInsight = wsClient.subscribe('insight', (data: ApiInsight) => {
+      if (tableDbId && data.relatedTableIds.includes(tableDbId) && 
+          (data.type === 'ACTION_ITEM' || data.type === 'QUESTION')) {
+        const insight = convertApiInsightToFrontend(data);
+        setActionItems(prev => [insight, ...prev.filter(i => i.id !== insight.id)]);
+      }
+    });
+    
+    return () => {
+      unsubTranscript();
+      unsubInsight();
+    };
+  }, [table]);
 
   const formatTime = (seconds: number) => {
     const m = Math.floor(seconds / 60);

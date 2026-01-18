@@ -87,3 +87,20 @@ API requests are proxied from `/api` to the backend.
 - Jan 17, 2026: OpenAI integration using SlalomOpenAIAPIKey
 - Jan 17, 2026: Frontend updated to fetch from API instead of mock data
 - Jan 17, 2026: WebSocket real-time updates implemented
+- Jan 18, 2026: Removed all mock data dependencies from components
+  - Dashboard.tsx: Now fetches insights, transcripts, sentiment from API with WebSocket updates
+  - FacilitatorScreen.tsx: Fetches action items from API, AI coach tips via /api/ai/coach-tip
+  - LiveRecap.tsx: Fetches insights from API with real-time WebSocket updates
+  - AttendeeView.tsx: Fetches insights from API, AI questions via /api/ai/query
+  - SponsorDashboard.tsx: Fetches keyword stats from /api/events/:id/sponsor-stats/:sponsorId
+  - EvidencePanel.tsx: Dynamic data capture meter based on session timing
+- Jan 18, 2026: Deleted geminiService.ts (all AI now via backend OpenAI)
+- Jan 18, 2026: Added table ID mapping utilities (createTableIdMapper) for proper join code handling
+
+## ID Mapping
+The application uses two ID systems:
+- **Database IDs**: Numeric auto-increment IDs stored in PostgreSQL
+- **Join Codes**: 6-character alphanumeric codes for tables (user-facing)
+
+Frontend tables use `joinCode` as their `id` property, with `_dbId` storing the numeric ID.
+Type converters provide mapping functions to reconcile these ID types in transcripts and insights.

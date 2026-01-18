@@ -1,10 +1,11 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Event, Insight, InsightType } from '../types';
-import { MOCK_INSIGHTS } from '../constants';
+import { api, wsClient } from '../services/api';
+import { convertApiInsightToFrontend } from '../services/typeConverters';
+import type { ApiInsight } from '../services/api';
 import { MessageSquare, ArrowRight, Shield, Clock, Star, Users, Sparkles, Loader2 } from 'lucide-react';
 import { clsx } from 'clsx';
-import { queryTranscripts } from '../services/geminiService';
 
 interface AttendeeViewProps {
   event: Event;
@@ -18,35 +19,78 @@ export const AttendeeView: React.FC<AttendeeViewProps> = ({ event, onExit }) => 
   const [isAnonymous, setIsAnonymous] = useState(true);
   const [target, setTarget] = useState<'ORGANIZERS' | 'AI'>('ORGANIZERS');
   
-  // State for AI response
   const [aiLoading, setAiLoading] = useState(false);
   const [aiResponse, setAiResponse] = useState<string | null>(null);
-
-  // State for Organizer submission
   const [submitted, setSubmitted] = useState(false);
+  const [insights, setInsights] = useState<Insight[]>([]);
 
-  // Filter relevant insights for attendees (Themes & Action Items mostly)
-  const insights = MOCK_INSIGHTS.filter(i => 
-      i.type === InsightType.THEME || 
-      i.type === InsightType.ACTION_ITEM || 
-      i.type === InsightType.GOLDEN_NUGGET
-  );
+  const fetchInsights = useCallback(async () => {
+    const eventDbId = parseInt(event.id);
+    if (isNaN(eventDbId)) return;
+    
+    try {
+      const apiInsights = await api.insights.list(eventDbId);
+      const allInsights = apiInsights.map(convertApiInsightToFrontend);
+      setInsights(allInsights.filter(i => 
+        i.type === InsightType.THEME || 
+        i.type === InsightType.ACTION_ITEM || 
+        i.type === InsightType.GOLDEN_NUGGET
+      ));
+    } catch (error) {
+      console.error('Failed to fetch insights:', error);
+    }
+  }, [event.id]);
+
+  useEffect(() => {
+    fetchInsights();
+  }, [fetchInsights]);
+
+  useEffect(() => {
+    wsClient.connect();
+    const unsubInsight = wsClient.subscribe('insight', (data) => {
+      const insight = convertApiInsightToFrontend(data);
+      if (insight.type === InsightType.THEME || 
+          insight.type === InsightType.ACTION_ITEM || 
+          insight.type === InsightType.GOLDEN_NUGGET) {
+        setInsights(prev => [insight, ...prev.filter(i => i.id !== insight.id)]);
+      }
+    });
+    
+    return () => {
+      unsubInsight();
+    };
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
       e.preventDefault();
+      const eventDbId = parseInt(event.id);
       
       if (target === 'AI') {
           setAiLoading(true);
-          const answer = await queryTranscripts(question);
-          setAiResponse(answer);
+          try {
+            const result = await api.ai.query(eventDbId, question);
+            setAiResponse(result.answer);
+          } catch (error) {
+            setAiResponse('Sorry, I could not process your question. Please try again.');
+          }
           setAiLoading(false);
       } else {
           setSubmitted(true);
-          setTimeout(() => {
-              setQuestion('');
-              setSubmitted(false);
-              alert("Question submitted to the event moderators!");
-          }, 2000);
+          try {
+            await api.questions.create(eventDbId, {
+              question,
+              askedBy: isAnonymous ? undefined : userName,
+              isAnonymous
+            });
+            setTimeout(() => {
+                setQuestion('');
+                setSubmitted(false);
+                alert("Question submitted to the event moderators!");
+            }, 2000);
+          } catch (error) {
+            console.error('Failed to submit question:', error);
+            setSubmitted(false);
+          }
       }
   };
 

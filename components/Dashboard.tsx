@@ -1,32 +1,17 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Sidebar } from './Sidebar';
 import { InsightCard } from './InsightCard';
 import { EvidencePanel } from './EvidencePanel';
 import { ThemeMap } from './ThemeMap';
 import { GovernanceModal } from './GovernanceModal';
 import { AgendaEditor } from './AgendaEditor';
-import { MOCK_INSIGHTS, MOCK_TRANSCRIPTS } from '../constants';
+import { api, wsClient } from '../services/api';
+import { convertApiInsightToFrontendWithMapper, convertApiTranscriptToFrontendWithMapper, createTableIdMapper, getDbIdFromTable } from '../services/typeConverters';
 import { Table, Insight, TranscriptSegment, InsightType, TableStatus, Event, AgendaItem } from '../types';
 import { BarChart2, Activity, Zap, Star, ArrowLeft, Megaphone, Plus, X, Copy, Check, QrCode, Sliders, Download, Shield, FileText, Filter, Search, Upload, Radio, StopCircle, HardDrive, Users, ThumbsUp, ThumbsDown, GitCommit, LayoutGrid, List, ShieldAlert, CalendarClock, Video, Loader2, PlayCircle } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { clsx } from 'clsx';
-
-const data = [
-  { name: '10:00', sentiment: 0.2 },
-  { name: '10:05', sentiment: 0.4 },
-  { name: '10:10', sentiment: 0.1 },
-  { name: '10:15', sentiment: -0.3 },
-  { name: '10:20', sentiment: -0.1 },
-  { name: '10:25', sentiment: 0.5 },
-  { name: '10:30', sentiment: 0.7 },
-];
-
-const CONSENSUS_DATA = [
-    { topic: "Cloud Strategy", score: 85, label: "Strong Consensus", type: 'consensus' },
-    { topic: "RTO Policy", score: 25, label: "Highly Controversial", type: 'controversy' },
-    { topic: "AI Adoption", score: 60, label: "Leaning Positive", type: 'consensus' },
-];
 
 interface DashboardProps {
     event: Event;
@@ -111,9 +96,83 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
   
   const [filteredInsights, setFilteredInsights] = useState<Insight[]>([]);
   const [filteredTranscripts, setFilteredTranscripts] = useState<TranscriptSegment[]>([]);
+  const [allInsights, setAllInsights] = useState<Insight[]>([]);
+  const [allTranscripts, setAllTranscripts] = useState<TranscriptSegment[]>([]);
+  const [sentimentData, setSentimentData] = useState<{ name: string; sentiment: number }[]>([]);
+  const [consensusData, setConsensusData] = useState<{ topic: string; score: number; label: string; type: string }[]>([]);
+  const [isLoadingData, setIsLoadingData] = useState(false);
+
+  const tableIdMapper = useCallback(() => createTableIdMapper(tables), [tables]);
+
+  const fetchInsightsAndTranscripts = useCallback(async () => {
+    const eventDbId = parseInt(event.id);
+    if (isNaN(eventDbId)) return;
+    
+    setIsLoadingData(true);
+    try {
+      const [apiInsights, apiTranscripts, sentimentResponse] = await Promise.all([
+        api.insights.list(eventDbId),
+        api.transcripts.listByEvent(eventDbId),
+        api.sentiment.getData(eventDbId).catch(() => []),
+      ]);
+      
+      const mapper = tableIdMapper();
+      const insights = apiInsights.map(i => convertApiInsightToFrontendWithMapper(i, mapper));
+      const transcripts = apiTranscripts.map(t => convertApiTranscriptToFrontendWithMapper(t, mapper));
+      
+      setAllInsights(insights);
+      setAllTranscripts(transcripts);
+      
+      if (sentimentResponse && sentimentResponse.length > 0) {
+        const formattedSentiment = sentimentResponse.map(s => ({
+          name: new Date(s.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          sentiment: s.sentiment
+        }));
+        setSentimentData(formattedSentiment);
+      }
+      
+      const themes = insights.filter(i => i.type === InsightType.THEME);
+      if (themes.length > 0) {
+        const consensus = themes.slice(0, 3).map(theme => ({
+          topic: theme.title,
+          score: Math.round((theme.confidence || 0.5) * 100),
+          label: (theme.confidence || 0.5) > 0.7 ? 'Strong Consensus' : (theme.confidence || 0.5) < 0.4 ? 'Controversial' : 'Mixed',
+          type: (theme.confidence || 0.5) > 0.5 ? 'consensus' : 'controversy'
+        }));
+        setConsensusData(consensus);
+      }
+    } catch (error) {
+      console.error('Failed to fetch dashboard data:', error);
+    }
+    setIsLoadingData(false);
+  }, [event.id]);
 
   useEffect(() => {
-    // 1. Determine relevant table IDs based on selection OR current list filters
+    fetchInsightsAndTranscripts();
+  }, [fetchInsightsAndTranscripts]);
+
+  useEffect(() => {
+    wsClient.connect();
+    
+    const mapper = tableIdMapper();
+    
+    const unsubInsight = wsClient.subscribe('insight', (data) => {
+      const insight = convertApiInsightToFrontendWithMapper(data, mapper);
+      setAllInsights(prev => [insight, ...prev.filter(i => i.id !== insight.id)]);
+    });
+    
+    const unsubTranscript = wsClient.subscribe('transcript', (data) => {
+      const transcript = convertApiTranscriptToFrontendWithMapper(data, mapper);
+      setAllTranscripts(prev => [transcript, ...prev.filter(t => t.id !== transcript.id)]);
+    });
+    
+    return () => {
+      unsubInsight();
+      unsubTranscript();
+    };
+  }, [tableIdMapper]);
+
+  useEffect(() => {
     let relevantTableIds: string[] = [];
     
     if (isMainStage) {
@@ -124,19 +183,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
         relevantTableIds = eventTables.map(t => t.id);
     }
 
-    // 2. Filter Insights
-    const relevantInsights = MOCK_INSIGHTS.filter(i => 
+    const relevantInsights = allInsights.filter(i => 
         i.relatedTableIds.some(id => relevantTableIds.includes(id))
     );
 
-    // 3. Filter Transcripts
-    const relevantTranscripts = MOCK_TRANSCRIPTS.filter(t => 
+    const relevantTranscripts = allTranscripts.filter(t => 
         relevantTableIds.includes(t.tableId)
     );
 
     setFilteredInsights(relevantInsights);
     setFilteredTranscripts(relevantTranscripts);
-  }, [selectedTableId, event.id, tables, sessionFilter, trackFilter, searchQuery, isMainStage]);
+  }, [selectedTableId, event.id, tables, sessionFilter, trackFilter, searchQuery, isMainStage, allInsights, allTranscripts]);
 
   const nuggets = filteredInsights.filter(i => i.type === InsightType.GOLDEN_NUGGET);
   const standardInsights = filteredInsights.filter(i => i.type !== InsightType.GOLDEN_NUGGET);
@@ -432,7 +489,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
                             </div>
                             <div className="h-40 w-full">
                                 <ResponsiveContainer width="100%" height="100%">
-                                    <AreaChart data={data}>
+                                    <AreaChart data={sentimentData.length > 0 ? sentimentData : [{ name: 'No data', sentiment: 0 }]}>
                                         <defs>
                                             <linearGradient id="colorSentiment" x1="0" y1="0" x2="0" y2="1">
                                                 <stop offset="5%" stopColor="#8884d8" stopOpacity={0.8}/>
@@ -455,7 +512,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
                                 Consensus vs Controversy
                             </h3>
                             <div className="flex-1 space-y-3">
-                                {CONSENSUS_DATA.map((item, idx) => (
+                                {consensusData.length > 0 ? consensusData.map((item, idx) => (
                                     <div key={idx} className="flex items-center justify-between">
                                         <div>
                                             <div className="text-sm font-medium text-slate-800">{item.topic}</div>
@@ -473,7 +530,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
                                             <span className="text-xs text-slate-400 w-8 text-right">{item.score}%</span>
                                         </div>
                                     </div>
-                                ))}
+                                )) : (
+                                    <div className="text-sm text-slate-400 text-center py-4">No consensus data yet</div>
+                                )}
                             </div>
                         </div>
                     </div>
@@ -542,7 +601,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
       </div>
 
       {/* Right Column: Evidence */}
-      <EvidencePanel transcripts={filteredTranscripts} />
+      <EvidencePanel 
+        transcripts={filteredTranscripts} 
+        sessionStartTime={event.mainSession?.startTime}
+        expectedDurationMinutes={event.mainSession?.duration ? Math.ceil(event.mainSession.duration / 60) : 60}
+        isLoading={isLoadingData}
+      />
 
       {/* --- MODALS --- */}
 

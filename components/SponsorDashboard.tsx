@@ -1,8 +1,8 @@
 
-import React from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Event, Sponsor } from '../types';
-import { MOCK_TRANSCRIPTS } from '../constants';
-import { Radar, BarChart2, TrendingUp, TrendingDown, Users, Activity, Lock, ArrowLeft } from 'lucide-react';
+import { api } from '../services/api';
+import { Radar, BarChart2, TrendingUp, TrendingDown, Users, Activity, Lock, ArrowLeft, Loader2 } from 'lucide-react';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 import { clsx } from 'clsx';
 
@@ -13,27 +13,35 @@ interface SponsorDashboardProps {
 }
 
 export const SponsorDashboard: React.FC<SponsorDashboardProps> = ({ event, sponsor, onExit }) => {
-  
-  // Mock logic to calculate brand mentions from transcripts based on keywords
-  const getKeywordStats = () => {
-      return sponsor.keywords.map(keyword => {
-          const mentions = MOCK_TRANSCRIPTS.filter(t => t.text.toLowerCase().includes(keyword.toLowerCase()));
-          const count = mentions.length;
-          const avgSentiment = mentions.length > 0 
-            ? mentions.reduce((acc, curr) => acc + curr.sentiment, 0) / mentions.length 
-            : 0;
-          
-          return {
-              keyword,
-              count: count + Math.floor(Math.random() * 5), // Fuzz data for demo visualization if mock data is sparse
-              sentiment: avgSentiment
-          };
-      });
-  };
+  const [stats, setStats] = useState<{ keyword: string; count: number; sentiment: number }[]>([]);
+  const [totalMentions, setTotalMentions] = useState(0);
+  const [avgOverallSentiment, setAvgOverallSentiment] = useState(0);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const stats = getKeywordStats();
-  const totalMentions = stats.reduce((acc, curr) => acc + curr.count, 0);
-  const avgOverallSentiment = stats.reduce((acc, curr) => acc + curr.sentiment, 0) / (stats.length || 1);
+  const fetchSponsorStats = useCallback(async () => {
+    const eventDbId = parseInt(event.id);
+    const sponsorDbId = parseInt(sponsor.id);
+    if (isNaN(eventDbId) || isNaN(sponsorDbId)) {
+      setIsLoading(false);
+      return;
+    }
+    
+    try {
+      const result = await api.sponsors.getStats(eventDbId, sponsorDbId);
+      setStats(result.keywords);
+      setTotalMentions(result.totalMentions);
+      setAvgOverallSentiment(result.avgSentiment);
+    } catch (error) {
+      console.error('Failed to fetch sponsor stats:', error);
+    }
+    setIsLoading(false);
+  }, [event.id, sponsor.id]);
+
+  useEffect(() => {
+    fetchSponsorStats();
+    const interval = setInterval(fetchSponsorStats, 30000);
+    return () => clearInterval(interval);
+  }, [fetchSponsorStats]);
 
   return (
     <div className="h-full w-full bg-slate-50 flex flex-col font-sans">
