@@ -5,6 +5,7 @@ import { InsightCard } from './InsightCard';
 import { EvidencePanel } from './EvidencePanel';
 import { ThemeMap } from './ThemeMap';
 import { GovernanceModal } from './GovernanceModal';
+import { ShareFacilitatorCodesModal } from './ShareFacilitatorCodesModal';
 import { AgendaEditor } from './AgendaEditor';
 import { api, wsClient } from '../services/api';
 import { convertApiInsightToFrontendWithMapper, convertApiTranscriptToFrontendWithMapper, createTableIdMapper, getDbIdFromTable } from '../services/typeConverters';
@@ -37,6 +38,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
   const [isNudgeModalOpen, setIsNudgeModalOpen] = useState(false);
   const [isAddTableModalOpen, setIsAddTableModalOpen] = useState(false);
   const [isCodesModalOpen, setIsCodesModalOpen] = useState(false);
+  const [isShareCodesModalOpen, setIsShareCodesModalOpen] = useState(false);
   const [isOpsModalOpen, setIsOpsModalOpen] = useState(false);
   const [isGovernanceModalOpen, setIsGovernanceModalOpen] = useState(false);
 
@@ -331,6 +333,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
         onEditTable={handleEditTable}
         onDeleteTable={handleDeleteTable}
         onViewCodes={() => setIsCodesModalOpen(true)}
+        onShareFacilitatorCodes={() => setIsShareCodesModalOpen(true)}
       />
 
       {/* Center Column: Insights & Viz */}
@@ -612,6 +615,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
 
       {/* Governance Modal */}
       <GovernanceModal isOpen={isGovernanceModalOpen} onClose={() => setIsGovernanceModalOpen(false)} />
+
+      <ShareFacilitatorCodesModal 
+        isOpen={isShareCodesModalOpen} 
+        onClose={() => setIsShareCodesModalOpen(false)}
+        tables={eventTables}
+        eventName={event.name}
+      />
 
       {/* Add / Edit Table Modal */}
       {isAddTableModalOpen && (

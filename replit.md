@@ -96,6 +96,7 @@ API requests are proxied from `/api` to the backend.
   - EvidencePanel.tsx: Dynamic data capture meter based on session timing
 - Jan 18, 2026: Deleted geminiService.ts (all AI now via backend OpenAI)
 - Jan 18, 2026: Added table ID mapping utilities (createTableIdMapper) for proper join code handling
+- Jan 18, 2026: Added Share Facilitator Codes feature - admins can share table join codes via copy, email, or SMS
 
 ## ID Mapping
 The application uses two ID systems:

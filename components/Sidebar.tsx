@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { Wifi, WifiOff, AlertTriangle, Mic, Clock, Plus, QrCode, Flame, Radio, Pencil, Trash2 } from 'lucide-react';
+import { Wifi, WifiOff, AlertTriangle, Mic, Clock, Plus, QrCode, Flame, Radio, Pencil, Trash2, Share2 } from 'lucide-react';
 import { Table, TableStatus, Event } from '../types';
 import { clsx } from 'clsx';
 
@@ -13,9 +13,10 @@ interface SidebarProps {
   onEditTable: (table: Table) => void;
   onDeleteTable: (id: string) => void;
   onViewCodes: () => void;
+  onShareFacilitatorCodes: () => void;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ event, tables, selectedTableId, onSelectTable, onAddTable, onEditTable, onDeleteTable, onViewCodes }) => {
+export const Sidebar: React.FC<SidebarProps> = ({ event, tables, selectedTableId, onSelectTable, onAddTable, onEditTable, onDeleteTable, onViewCodes, onShareFacilitatorCodes }) => {
   
   const getStatusIcon = (table: Table) => {
     if (table.isHot) return <Flame className="w-4 h-4 text-orange-500 fill-orange-500 animate-pulse" />;
@@ -91,6 +92,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ event, tables, selectedTableId
                     title="View Join Codes"
                 >
                     <QrCode className="w-4 h-4" />
+                </button>
+                <button 
+                    onClick={onShareFacilitatorCodes}
+                    className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
+                    title="Share Facilitator Codes"
+                >
+                    <Share2 className="w-4 h-4" />
                 </button>
             </div>
         </div>
