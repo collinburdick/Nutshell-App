@@ -186,12 +186,42 @@ app.get("/api/events/:id", async (req, res) => {
 app.put("/api/events/:id", async (req, res) => {
   try {
     const eventId = parseInt(req.params.id);
+    if (Number.isNaN(eventId)) {
+      return res.status(400).json({ error: "Invalid event ID" });
+    }
+    
+    const updateData: any = {};
+    if (req.body.name !== undefined) updateData.name = req.body.name;
+    if (req.body.location !== undefined) updateData.location = req.body.location;
+    if (req.body.status !== undefined) updateData.status = req.body.status;
+    if (req.body.privacyMode !== undefined) updateData.privacyMode = req.body.privacyMode;
+    if (req.body.primaryColor !== undefined) updateData.primaryColor = req.body.primaryColor;
+    if (req.body.logoUrl !== undefined) updateData.logoUrl = req.body.logoUrl;
+    if (req.body.streamUrl !== undefined) updateData.streamUrl = req.body.streamUrl;
+    if (req.body.mainSessionStatus !== undefined) updateData.mainSessionStatus = req.body.mainSessionStatus;
+    if (req.body.mainSessionDuration !== undefined) updateData.mainSessionDuration = req.body.mainSessionDuration;
+    
+    if (req.body.startDate) {
+      updateData.startDate = new Date(req.body.startDate);
+    }
+    if (req.body.endDate) {
+      updateData.endDate = new Date(req.body.endDate);
+    }
+    if (req.body.mainSessionStartTime) {
+      updateData.mainSessionStartTime = new Date(req.body.mainSessionStartTime);
+    }
+    
     const [updated] = await db.update(events)
-      .set(req.body)
+      .set(updateData)
       .where(eq(events.id, eventId))
       .returning();
+      
+    if (!updated) {
+      return res.status(404).json({ error: "Event not found" });
+    }
     res.json(updated);
   } catch (error) {
+    console.error("[PUT /api/events/:id] Error:", error);
     res.status(500).json({ error: "Failed to update event" });
   }
 });
