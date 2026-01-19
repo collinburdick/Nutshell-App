@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Sidebar } from './Sidebar';
 import { InsightCard } from './InsightCard';
 import { EvidencePanel } from './EvidencePanel';
@@ -10,7 +10,7 @@ import { AgendaEditor } from './AgendaEditor';
 import { api, notifyError, wsClient } from '../services/api';
 import { convertApiInsightToFrontendWithMapper, convertApiTranscriptToFrontendWithMapper, createTableIdMapper } from '../services/typeConverters';
 import { Table, Insight, TranscriptSegment, InsightType, TableStatus, Event, AgendaItem } from '../types';
-import { Activity, Zap, Star, ArrowLeft, Megaphone, Plus, X, Sliders, Download, Shield, FileText, Filter, Search, Radio, StopCircle, HardDrive, Users, GitCommit, LayoutGrid, List, ShieldAlert, CalendarClock, Video, Loader2, PlayCircle } from 'lucide-react';
+import { Activity, Zap, Star, ArrowLeft, Megaphone, Plus, X, Sliders, Download, Shield, FileText, Filter, Search, Radio, StopCircle, HardDrive, Users, GitCommit, LayoutGrid, List, ShieldAlert, CalendarClock, Video, Loader2, PlayCircle, Mic, MicOff, Upload, Lightbulb, HelpCircle, MessageSquare } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { clsx } from 'clsx';
 
@@ -70,6 +70,23 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
   // Table Agenda State
   const [useCustomAgenda, setUseCustomAgenda] = useState(false);
   const [customAgendaItems, setCustomAgendaItems] = useState<AgendaItem[]>([]);
+
+  // Plenary Recording State
+  const [plenaryTableId, setPlenaryTableId] = useState<number | null>(null);
+  const [isPlenaryRecording, setIsPlenaryRecording] = useState(false);
+  const [plenaryProcessingStatus, setPlenaryProcessingStatus] = useState<'idle' | 'recording' | 'uploading' | 'transcribing'>('idle');
+  const [plenaryChunkCount, setPlenaryChunkCount] = useState(0);
+  const [plenaryLastTranscript, setPlenaryLastTranscript] = useState('');
+  const [plenarySummary, setPlenarySummary] = useState<{
+    themes: string[];
+    insights: string[];
+    questions: string[];
+    transcriptCount: number;
+    recentTranscripts: { speaker: string; text: string; timestamp: string }[];
+  }>({ themes: [], insights: [], questions: [], transcriptCount: 0, recentTranscripts: [] });
+  const plenaryMediaRecorder = useRef<MediaRecorder | null>(null);
+  const plenaryAudioChunks = useRef<Blob[]>([]);
+  const plenaryRecordingInterval = useRef<NodeJS.Timeout | null>(null);
 
   // Update local event state when prop changes
   useEffect(() => {
@@ -207,6 +224,181 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
   const nuggets = filteredInsights.filter(i => i.type === InsightType.GOLDEN_NUGGET);
   const standardInsights = filteredInsights.filter(i => i.type !== InsightType.GOLDEN_NUGGET);
   const eventNuggets = allInsights.filter(i => i.type === InsightType.GOLDEN_NUGGET);
+
+  // Initialize plenary table
+  useEffect(() => {
+    const initPlenaryTable = async () => {
+      const eventDbId = parseInt(event.id);
+      if (isNaN(eventDbId)) return;
+      
+      try {
+        const response = await fetch(`/api/events/${eventDbId}/plenary-table`);
+        if (response.ok) {
+          const table = await response.json();
+          setPlenaryTableId(table.id);
+        }
+      } catch (error) {
+        console.error('Failed to init plenary table:', error);
+      }
+    };
+    initPlenaryTable();
+  }, [event.id]);
+
+  // Fetch plenary summary when on main stage
+  useEffect(() => {
+    if (!isMainStage) return;
+    
+    const fetchPlenarySummary = async () => {
+      const eventDbId = parseInt(event.id);
+      if (isNaN(eventDbId)) return;
+      
+      try {
+        const response = await fetch(`/api/events/${eventDbId}/plenary-summary`);
+        if (response.ok) {
+          const summary = await response.json();
+          setPlenarySummary(summary);
+        }
+      } catch (error) {
+        console.error('Failed to fetch plenary summary:', error);
+      }
+    };
+    
+    fetchPlenarySummary();
+    const interval = setInterval(fetchPlenarySummary, 15000);
+    return () => clearInterval(interval);
+  }, [isMainStage, event.id, plenaryChunkCount]);
+
+  // Plenary recording functions
+  const startPlenaryRecording = async () => {
+    if (!plenaryTableId) {
+      notifyError('Recording', 'Plenary table not initialized');
+      return;
+    }
+    
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      plenaryMediaRecorder.current = mediaRecorder;
+      plenaryAudioChunks.current = [];
+      
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          plenaryAudioChunks.current.push(e.data);
+        }
+      };
+      
+      mediaRecorder.onstop = () => {
+        stream.getTracks().forEach(track => track.stop());
+      };
+      
+      mediaRecorder.start();
+      setIsPlenaryRecording(true);
+      setPlenaryProcessingStatus('recording');
+      
+      // Send audio chunks every 10 seconds
+      plenaryRecordingInterval.current = setInterval(async () => {
+        if (plenaryMediaRecorder.current?.state === 'recording') {
+          plenaryMediaRecorder.current.stop();
+          
+          await new Promise(resolve => setTimeout(resolve, 100));
+          
+          if (plenaryAudioChunks.current.length > 0) {
+            const audioBlob = new Blob(plenaryAudioChunks.current, { type: 'audio/webm' });
+            plenaryAudioChunks.current = [];
+            
+            await sendPlenaryAudioChunk(audioBlob);
+          }
+          
+          // Restart recording
+          if (isPlenaryRecording) {
+            const newStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const newRecorder = new MediaRecorder(newStream, { mimeType: 'audio/webm' });
+            plenaryMediaRecorder.current = newRecorder;
+            
+            newRecorder.ondataavailable = (e) => {
+              if (e.data.size > 0) {
+                plenaryAudioChunks.current.push(e.data);
+              }
+            };
+            
+            newRecorder.onstop = () => {
+              newStream.getTracks().forEach(track => track.stop());
+            };
+            
+            newRecorder.start();
+            setPlenaryProcessingStatus('recording');
+          }
+        }
+      }, 10000);
+      
+    } catch (error) {
+      notifyError('Microphone access', error);
+    }
+  };
+
+  const stopPlenaryRecording = async () => {
+    setIsPlenaryRecording(false);
+    
+    if (plenaryRecordingInterval.current) {
+      clearInterval(plenaryRecordingInterval.current);
+      plenaryRecordingInterval.current = null;
+    }
+    
+    if (plenaryMediaRecorder.current?.state === 'recording') {
+      plenaryMediaRecorder.current.stop();
+      
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      if (plenaryAudioChunks.current.length > 0) {
+        const audioBlob = new Blob(plenaryAudioChunks.current, { type: 'audio/webm' });
+        plenaryAudioChunks.current = [];
+        await sendPlenaryAudioChunk(audioBlob);
+      }
+    }
+    
+    setPlenaryProcessingStatus('idle');
+  };
+
+  const sendPlenaryAudioChunk = async (audioBlob: Blob) => {
+    if (!plenaryTableId) return;
+    
+    setPlenaryProcessingStatus('uploading');
+    
+    try {
+      const formData = new FormData();
+      formData.append('audio', audioBlob, 'plenary-recording.webm');
+      formData.append('tableId', plenaryTableId.toString());
+      formData.append('speaker', 'Main Stage Speaker');
+      
+      setPlenaryProcessingStatus('transcribing');
+      
+      const response = await fetch('/api/ai/transcribe', {
+        method: 'POST',
+        body: formData,
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        if (result.text) {
+          setPlenaryLastTranscript(result.text);
+          setPlenaryChunkCount(prev => prev + 1);
+        }
+      }
+      
+      if (isPlenaryRecording) {
+        setPlenaryProcessingStatus('recording');
+      } else {
+        setPlenaryProcessingStatus('idle');
+      }
+    } catch (error) {
+      console.error('Failed to send plenary audio:', error);
+      if (isPlenaryRecording) {
+        setPlenaryProcessingStatus('recording');
+      } else {
+        setPlenaryProcessingStatus('idle');
+      }
+    }
+  };
 
   // Handlers
   const handleTableFormSubmit = (e: React.FormEvent) => {
@@ -591,11 +783,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
   const toggleMainSessionRecording = () => {
       setEvent(prev => {
           const isRecording = prev.mainSession.status === 'RECORDING';
-          const next = {
+          const newStatus: 'IDLE' | 'RECORDING' | 'COMPLETED' = isRecording ? 'COMPLETED' : 'RECORDING';
+          const next: Event = {
               ...prev,
               mainSession: {
                   ...prev.mainSession,
-                  status: isRecording ? 'COMPLETED' : 'RECORDING',
+                  status: newStatus,
                   startTime: !isRecording ? (prev.mainSession.startTime || Date.now()) : prev.mainSession.startTime,
               }
           };
@@ -748,35 +941,180 @@ export const Dashboard: React.FC<DashboardProps> = ({ event: initialEvent, table
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
             
             {isMainStage ? (
-                <div className="flex flex-col items-center justify-center h-64 text-slate-400 border-2 border-dashed border-slate-200 rounded-xl bg-slate-50/50">
-                    <Radio className="w-12 h-12 mb-4 text-slate-300" />
-                    <h3 className="text-lg font-bold text-slate-600">Main Stage Live Feed</h3>
-                    <p className="text-sm text-slate-500">
-                        Status: {event.mainSession.status === 'RECORDING' ? 'Recording in progress' : event.mainSession.status === 'COMPLETED' ? 'Recording complete' : 'Ready to record'}
-                    </p>
-                    {event.mainSession.startTime && (
-                        <p className="text-xs text-slate-400 mt-1">
-                            Started at {new Date(event.mainSession.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                        </p>
+                <div className="space-y-6">
+                    {/* Recording Controls */}
+                    <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="text-lg font-bold text-slate-700 flex items-center gap-2">
+                                <Radio className="w-5 h-5 text-indigo-500" />
+                                Main Stage Recording
+                            </h3>
+                            <button
+                                onClick={isPlenaryRecording ? stopPlenaryRecording : startPlenaryRecording}
+                                disabled={!plenaryTableId}
+                                className={clsx(
+                                    "flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all",
+                                    isPlenaryRecording 
+                                        ? "bg-red-500 hover:bg-red-600 text-white" 
+                                        : "bg-indigo-600 hover:bg-indigo-700 text-white",
+                                    !plenaryTableId && "opacity-50 cursor-not-allowed"
+                                )}
+                            >
+                                {isPlenaryRecording ? (
+                                    <>
+                                        <MicOff className="w-4 h-4" />
+                                        Stop Recording
+                                    </>
+                                ) : (
+                                    <>
+                                        <Mic className="w-4 h-4" />
+                                        Start Recording
+                                    </>
+                                )}
+                            </button>
+                        </div>
+                        
+                        {/* Processing Status */}
+                        <div className="flex items-center gap-4 text-sm">
+                            <div className={clsx(
+                                "flex items-center gap-2 px-3 py-1.5 rounded-full",
+                                plenaryProcessingStatus === 'recording' && "bg-red-100 text-red-700",
+                                plenaryProcessingStatus === 'uploading' && "bg-amber-100 text-amber-700",
+                                plenaryProcessingStatus === 'transcribing' && "bg-blue-100 text-blue-700",
+                                plenaryProcessingStatus === 'idle' && "bg-slate-100 text-slate-500"
+                            )}>
+                                {plenaryProcessingStatus === 'recording' && (
+                                    <>
+                                        <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+                                        Recording Audio
+                                    </>
+                                )}
+                                {plenaryProcessingStatus === 'uploading' && (
+                                    <>
+                                        <Upload className="w-3 h-3 animate-pulse" />
+                                        Uploading...
+                                    </>
+                                )}
+                                {plenaryProcessingStatus === 'transcribing' && (
+                                    <>
+                                        <Loader2 className="w-3 h-3 animate-spin" />
+                                        AI Transcribing...
+                                    </>
+                                )}
+                                {plenaryProcessingStatus === 'idle' && (
+                                    <>
+                                        <span className="w-2 h-2 bg-slate-400 rounded-full" />
+                                        Ready
+                                    </>
+                                )}
+                            </div>
+                            
+                            {plenaryChunkCount > 0 && (
+                                <span className="text-slate-500">
+                                    {plenaryChunkCount} segments transcribed
+                                </span>
+                            )}
+                        </div>
+                        
+                        {/* Last Transcript */}
+                        {plenaryLastTranscript && (
+                            <div className="mt-4 p-3 bg-slate-50 rounded-lg border border-slate-100">
+                                <div className="text-xs text-slate-400 mb-1">Last transcribed:</div>
+                                <p className="text-sm text-slate-700">{plenaryLastTranscript}</p>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Plenary Summary Grid */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        {/* Key Themes */}
+                        <div className="bg-white p-4 rounded-lg border border-slate-200 shadow-sm">
+                            <h4 className="font-semibold text-slate-700 flex items-center gap-2 mb-3">
+                                <Lightbulb className="w-4 h-4 text-amber-500" />
+                                Key Themes
+                            </h4>
+                            {plenarySummary.themes.length > 0 ? (
+                                <ul className="space-y-2">
+                                    {plenarySummary.themes.map((theme, i) => (
+                                        <li key={i} className="text-sm text-slate-600 flex items-start gap-2">
+                                            <span className="text-amber-500 mt-0.5">•</span>
+                                            {theme}
+                                        </li>
+                                    ))}
+                                </ul>
+                            ) : (
+                                <p className="text-sm text-slate-400 italic">Start recording to capture themes</p>
+                            )}
+                        </div>
+                        
+                        {/* Top Insights */}
+                        <div className="bg-white p-4 rounded-lg border border-slate-200 shadow-sm">
+                            <h4 className="font-semibold text-slate-700 flex items-center gap-2 mb-3">
+                                <MessageSquare className="w-4 h-4 text-indigo-500" />
+                                Top Insights
+                            </h4>
+                            {plenarySummary.insights.length > 0 ? (
+                                <ul className="space-y-2">
+                                    {plenarySummary.insights.map((insight, i) => (
+                                        <li key={i} className="text-sm text-slate-600 flex items-start gap-2">
+                                            <span className="text-indigo-500 mt-0.5">•</span>
+                                            {insight}
+                                        </li>
+                                    ))}
+                                </ul>
+                            ) : (
+                                <p className="text-sm text-slate-400 italic">Insights will appear here</p>
+                            )}
+                        </div>
+                        
+                        {/* Open Questions */}
+                        <div className="bg-white p-4 rounded-lg border border-slate-200 shadow-sm">
+                            <h4 className="font-semibold text-slate-700 flex items-center gap-2 mb-3">
+                                <HelpCircle className="w-4 h-4 text-emerald-500" />
+                                Open Questions
+                            </h4>
+                            {plenarySummary.questions.length > 0 ? (
+                                <ul className="space-y-2">
+                                    {plenarySummary.questions.map((question, i) => (
+                                        <li key={i} className="text-sm text-slate-600 flex items-start gap-2">
+                                            <span className="text-emerald-500 mt-0.5">?</span>
+                                            {question}
+                                        </li>
+                                    ))}
+                                </ul>
+                            ) : (
+                                <p className="text-sm text-slate-400 italic">Questions will appear here</p>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Recent Transcripts */}
+                    {plenarySummary.recentTranscripts.length > 0 && (
+                        <div className="bg-white p-4 rounded-lg border border-slate-200 shadow-sm">
+                            <h4 className="font-semibold text-slate-700 mb-3">Recent Transcript</h4>
+                            <div className="space-y-3 max-h-48 overflow-y-auto">
+                                {plenarySummary.recentTranscripts.map((t, i) => (
+                                    <div key={i} className="flex gap-3 text-sm">
+                                        <span className="font-medium text-indigo-600 whitespace-nowrap">
+                                            {t.speaker || 'Speaker'}:
+                                        </span>
+                                        <span className="text-slate-600">{t.text}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
                     )}
-                    {event.mainSession.streamUrl ? (
+
+                    {/* Stats */}
+                    <div className="flex items-center gap-6 text-sm text-slate-500">
+                        <span>{plenarySummary.transcriptCount} total segments</span>
                         <button 
-                            onClick={() => handleDownload('Audio', 'Main Stage')}
-                            className="mt-3 text-indigo-600 font-medium hover:underline text-sm"
+                            onClick={() => setIsOpsModalOpen(true)}
+                            className="text-indigo-600 font-medium hover:underline"
                         >
-                            Open Stream
+                            Access Recordings in Ops Vault
                         </button>
-                    ) : (
-                        <p className="text-xs text-slate-400 mt-2">
-                            Add a stream URL in Settings to enable live monitoring.
-                        </p>
-                    )}
-                    <button 
-                        onClick={() => setIsOpsModalOpen(true)}
-                        className="mt-4 text-indigo-600 font-medium hover:underline text-sm"
-                    >
-                        Access Recordings in Ops Vault
-                    </button>
+                    </div>
                 </div>
             ) : (
                 <>

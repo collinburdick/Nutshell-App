@@ -398,6 +398,115 @@ app.delete("/api/tables/:id", async (req, res) => {
   }
 });
 
+app.get("/api/events/:eventId/plenary-table", async (req, res) => {
+  try {
+    const eventId = parseInt(req.params.eventId);
+    
+    let plenaryTable = await db.query.tables.findFirst({
+      where: and(eq(tables.eventId, eventId), eq(tables.isPlenaryTable, true)),
+    });
+    
+    if (!plenaryTable) {
+      const [created] = await db.insert(tables).values({
+        eventId,
+        joinCode: `PLENARY${eventId}`,
+        name: 'Main Stage',
+        session: 'Plenary Session',
+        status: 'OFFLINE',
+        isPlenaryTable: true,
+      }).returning();
+      plenaryTable = created;
+    }
+    
+    res.json(plenaryTable);
+  } catch (error) {
+    console.error("Failed to get/create plenary table:", error);
+    res.status(500).json({ error: "Failed to get plenary table" });
+  }
+});
+
+app.get("/api/events/:eventId/plenary-summary", async (req, res) => {
+  try {
+    const eventId = parseInt(req.params.eventId);
+    
+    const plenaryTable = await db.query.tables.findFirst({
+      where: and(eq(tables.eventId, eventId), eq(tables.isPlenaryTable, true)),
+    });
+    
+    if (!plenaryTable) {
+      return res.json({ themes: [], insights: [], questions: [], transcriptCount: 0 });
+    }
+    
+    const plenaryTranscripts = await db.select()
+      .from(transcripts)
+      .where(eq(transcripts.tableId, plenaryTable.id))
+      .orderBy(desc(transcripts.timestamp))
+      .limit(50);
+    
+    if (plenaryTranscripts.length < 2 || !openai) {
+      return res.json({ 
+        themes: [], 
+        insights: [], 
+        questions: [], 
+        transcriptCount: plenaryTranscripts.length,
+        recentTranscripts: plenaryTranscripts.slice(0, 5).map(t => ({
+          speaker: t.speaker,
+          text: t.text,
+          timestamp: t.timestamp
+        }))
+      });
+    }
+    
+    const transcriptText = plenaryTranscripts
+      .map(t => `${t.speaker || 'Speaker'}: ${t.text}`)
+      .reverse()
+      .join('\n');
+    
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: `You are analyzing a plenary session transcript from a conference. Unlike roundtable discussions, plenary sessions have identified speakers.
+          
+Extract:
+1. Key Themes (3-5 main topics discussed)
+2. Top Insights (3-5 notable points or takeaways)
+3. Open Questions (2-3 questions raised or implied)
+
+Respond in JSON format:
+{
+  "themes": ["theme1", "theme2", ...],
+  "insights": ["insight1", "insight2", ...],
+  "questions": ["question1", "question2", ...]
+}`
+        },
+        { role: "user", content: transcriptText }
+      ],
+      max_tokens: 800,
+      response_format: { type: "json_object" },
+    });
+    
+    const content = response.choices[0]?.message?.content || '{}';
+    const parsed = JSON.parse(content);
+    
+    res.json({
+      themes: parsed.themes || [],
+      insights: parsed.insights || [],
+      questions: parsed.questions || [],
+      transcriptCount: plenaryTranscripts.length,
+      recentTranscripts: plenaryTranscripts.slice(0, 5).map(t => ({
+        speaker: t.speaker,
+        text: t.text,
+        timestamp: t.timestamp
+      }))
+    });
+  } catch (error) {
+    console.error("Failed to generate plenary summary:", error);
+    res.status(500).json({ error: "Failed to generate plenary summary" });
+  }
+});
+
 app.get("/api/tables/:joinCode/join", async (req, res) => {
   try {
     const { joinCode } = req.params;

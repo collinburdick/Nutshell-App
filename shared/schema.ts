@@ -78,6 +78,7 @@ export const tables = pgTable("tables", {
   facilitatorId: integer("facilitator_id").references(() => facilitators.id),
   trackId: integer("track_id").references(() => tracks.id),
   isHot: boolean("is_hot").default(false),
+  isPlenaryTable: boolean("is_plenary_table").default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

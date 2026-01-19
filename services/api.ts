@@ -324,8 +324,10 @@ export class WebSocketClient {
       }
     };
     
-    this.ws.onerror = (error) => {
-      notifyError('WebSocket error', error);
+    this.ws.onerror = () => {
+      // WebSocket errors are usually just connection issues - don't alert users
+      // The reconnection logic handles recovery automatically
+      console.log('WebSocket connection error, will retry...');
     };
   }
   
