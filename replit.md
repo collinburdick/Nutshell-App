@@ -103,6 +103,16 @@ API requests are proxied from `/api` to the backend.
   - Audio is sent to backend for OpenAI processing (no browser dependencies)
   - Sentiment analysis via GPT-4o-mini for each transcript
   - Visual processing indicators show recording/uploading/transcribing status
+- Jan 19, 2026: Added plenary session recording with same capabilities as roundtables
+  - Added isPlenaryTable field to tables schema
+  - New /api/events/:id/plenary-table endpoint creates/fetches plenary table
+  - New /api/events/:id/plenary-summary endpoint generates AI themes/insights/questions
+  - Dashboard Main Stage now has full recording UI with audio transcription
+  - Plenary sessions show Key Themes, Top Insights, and Open Questions panels
+  - Plenary transcripts keep speaker names visible (no de-identification)
+- Jan 19, 2026: Fixed WebSocket error display
+  - Suppressed non-informative [object Event] errors
+  - Improved reconnection feedback with cleaner logging
 
 ## ID Mapping
 The application uses two ID systems:
